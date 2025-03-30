@@ -1,0 +1,12 @@
+version: '3'
+services:
+  exchange:
+    build:
+      context: .
+      dockerfile: src/Dockerfile
+    container_name: exchange_server
+    ports:
+      - "12345:12345"
+    restart: always
+    volumes:
+      - ./logs:/var/log/erss
