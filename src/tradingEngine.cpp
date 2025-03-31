@@ -110,6 +110,22 @@ void TradingEngine::matchOrders(const std::string &symbol){
 
 bool TradingEngine::placeOrder(const std::string &account_id, const std::string &symbol, double limit_price, int quantity, OrderSide side, std::string &msg, int &createdOrderId)
 {
+    // Validate inputs
+    if(symbol.empty()) {
+        msg = "Symbol cannot be empty";
+        return false;
+    }
+    
+    if(quantity <= 0) {
+        msg = "Quantity must be positive";
+        return false;
+    }
+    
+    if(limit_price <= 0) {
+        msg = "Limit price must be positive";
+        return false;
+    }
+
     {
         std::lock_guard<std::mutex> lockAcc(accountsMtx);
         auto it = accounts.find(account_id);
