@@ -21,7 +21,7 @@ long Record::getTimestamp() const {
 Order::Order(int order_id, const std::string &account_id, const std::string &symbol, double limit_price, 
             int quantity, long timestamp, OrderSide side) 
             : order_id(order_id), account_id(account_id), symbol(symbol), limit_price(limit_price),
-             quantity(quantity), filled(0), cancelled(0), cancelled_timestamp(0), timestamp(timestamp), side(side) {}
+              quantity(quantity), filled(0), cancelled(0), cancelled_timestamp(0), timestamp(timestamp), side(side) {}
 
 int Order::getOrderId() const {
     return order_id;

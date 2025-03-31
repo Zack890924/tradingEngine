@@ -181,12 +181,14 @@ void TradingEngine::trade(std::shared_ptr<Order> buyOrder, std::shared_ptr<Order
     if(buyAccountIt == accounts.end() || sellAccountIt == accounts.end()){
         throw std::runtime_error("Account not found during trade");
     }
+
     Account &buyer = buyAccountIt->second;
     Account &seller = sellAccountIt->second;
     long t = time(nullptr);
     Record rec(qty, tradePrice, t);
     buyOrder->addExecution(qty, rec);
     sellOrder->addExecution(qty, rec);
+    //perform trade
     double cost = qty * tradePrice;
     buyer.deductFrozenFunds(cost);
     seller.deductFrozenPosition(sellOrder->getSymbol(), qty);
@@ -327,7 +329,7 @@ std::string TradingEngine::processRequest(const std::string &xmlStr){
     }
 
     XMLElement *root = doc.RootElement();
-    if (!root) {
+    if (!root){
         XMLElement *er = respDoc.NewElement("error");
         er->SetText("No root element");
         rootResp->InsertEndChild(er);
@@ -338,7 +340,7 @@ std::string TradingEngine::processRequest(const std::string &xmlStr){
     }
 
     const char* rootName = root->Name();
-    if (!rootName) {
+    if (!rootName){
         XMLElement *er = respDoc.NewElement("error");
         er->SetText("Root element has no name");
         rootResp->InsertEndChild(er);
@@ -348,13 +350,13 @@ std::string TradingEngine::processRequest(const std::string &xmlStr){
         return printer.CStr();
     }
 
-    if (strcmp(rootName, "create") == 0) {
+    if(strcmp(rootName, "create") == 0){
         processCreate(root, rootResp, &respDoc);
     }
-    else if (strcmp(rootName, "transactions") == 0) {
+    else if(strcmp(rootName, "transactions") == 0){
         processTransaction(root, rootResp);
     }
-    else {
+    else{
         XMLElement *er = respDoc.NewElement("error");
         er->SetText("Unknown root tag");
         rootResp->InsertEndChild(er);
@@ -587,6 +589,7 @@ void TradingEngine::processTransaction(const tinyxml2::XMLElement *root, tinyxml
             bool querySuccess = queryOrder(orderId, info);
             if(querySuccess){
                 auto it = orders.find(orderId);
+
                 if(it != orders.end()){
                     XMLElement *sta = doc->NewElement("status");
                     sta->SetAttribute("id", orderId);
