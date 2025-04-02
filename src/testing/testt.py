@@ -79,9 +79,9 @@ def run_server_tests():
     global_ids["match_buy"] = acct_match_buy
     global_ids["match_sell"] = acct_match_sell
 
-    # 測試案例列表（部分案例使用 lambda 以動態生成 XML）
+    
     test_cases = [
-        # Test 1: 建立帳戶與 symbol (買單帳戶)
+      
         ("Test 1: Create account and symbol for buy order", 
          f"""<?xml version="1.0"?>
 <create>
@@ -91,7 +91,7 @@ def run_server_tests():
   </symbol>
 </create>"""),
 
-        # Test 2: 建立帳戶與 symbol (賣單帳戶)
+       
         ("Test 2: Create account and symbol for sell order", 
          f"""<?xml version="1.0"?>
 <create>
@@ -101,7 +101,6 @@ def run_server_tests():
   </symbol>
 </create>"""),
 
-        # Test 3: 重複建立帳戶 (dup)
         ("Test 3: Duplicate account creation", 
          f"""<?xml version="1.0"?>
 <create>
@@ -109,7 +108,7 @@ def run_server_tests():
   <account id="{acct_dup}" balance="8000"/>
 </create>"""),
 
-        # Test 4: 建立 symbol 時 account 缺少 id (missing)
+    
         ("Test 4: Symbol with missing account id", 
          f"""<?xml version="1.0"?>
 <create>
@@ -120,62 +119,59 @@ def run_server_tests():
   </symbol>
 </create>"""),
 
-        # Test 5: 有效買單，使用帳戶 (buy)
+ 
         ("Test 5: Valid buy order", 
          f"""<?xml version="1.0"?>
 <transactions id="{acct_buy}">
   <order sym="AAPL" amount="50" limit="120"/>
 </transactions>"""),
 
-        # Test 6: 有效賣單，使用帳戶 (sell)
+
         ("Test 6: Valid sell order", 
          f"""<?xml version="1.0"?>
 <transactions id="{acct_sell}">
   <order sym="AAPL" amount="-30" limit="115"/>
 </transactions>"""),
 
-        # Test 7: 查詢 Test 5 中買單狀態 (動態取得 id)
+
         ("Test 7: Query buy order", 
          lambda: f"""<?xml version="1.0"?>
 <transactions id="{acct_buy}">
   <query id="{global_order_ids.get('buy', '0')}"/>
 </transactions>"""),
 
-        # Test 8: 取消 Test 5 中買單 (動態取得 id)
         ("Test 8: Cancel buy order", 
          lambda: f"""<?xml version="1.0"?>
 <transactions id="{acct_buy}">
   <cancel id="{global_order_ids.get('buy', '0')}"/>
 </transactions>"""),
 
-        # Test 9: 買單資金不足 (使用不存在的帳戶, acct_insufficient_funds)
+
         ("Test 9: Buy order with insufficient funds", 
          f"""<?xml version="1.0"?>
 <transactions id="{acct_insufficient_funds}">
   <order sym="AAPL" amount="1000" limit="150"/>
 </transactions>"""),
 
-        # Test 10: 賣單持股不足 (使用不存在的帳戶, acct_insufficient_shares)
+   
         ("Test 10: Sell order with insufficient shares", 
          f"""<?xml version="1.0"?>
 <transactions id="{acct_insufficient_shares}">
   <order sym="AAPL" amount="-500" limit="110"/>
 </transactions>"""),
 
-        # Test 11: 查詢不存在的訂單 (用買單帳戶)
         ("Test 11: Query non-existent order", 
          f"""<?xml version="1.0"?>
 <transactions id="{acct_buy}">
   <query id="9999"/>
 </transactions>"""),
 
-        # Test 12: Malformed XML 請求
         ("Test 12: Malformed XML", 
          """<?xml version="1.0"?>
 <create><account id="707" balance="3000"
 """),
 
-        # Test 13: 交易請求中帳戶不存在 (使用 acct_invalid)
+
         ("Test 13: Transactions with invalid account", 
          f"""<?xml version="1.0"?>
 <transactions id="{acct_invalid}">
@@ -184,7 +180,7 @@ def run_server_tests():
   <cancel id="10"/>
 </transactions>"""),
 
-        # Test 14a: 撮合測試 - 為避免資金不足，先建立買賣雙方帳戶 (match_buy 與 match_sell)
+
         ("Test 14a: Create account for matching (buy side)", 
          f"""<?xml version="1.0"?>
 <create>
@@ -201,8 +197,7 @@ def run_server_tests():
     <account id="{acct_match_sell}">500</account>
   </symbol>
 </create>"""),
-        # Test 14c: 撮合測試：部分成交與拆單
-        # 調整買單為 100 股、賣單各 50 股，符合資金與持股條件
+
         ("Test 14c: Matching orders with partial fill", 
          f"""<?xml version="1.0"?>
 <transactions id="{acct_match_buy}">
@@ -242,7 +237,7 @@ def run_server_tests():
         print("Response:")
         print(response if response else "No response")
 
-        # 如果是 Test 5 (買單)，擷取訂單 id 儲存到 global_order_ids
+      
         if "Valid buy order" in name and response:
             match = re.search(r'<opened .*?id="(\d+)"', response)
             if match:
