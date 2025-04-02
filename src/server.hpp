@@ -20,7 +20,6 @@ class Server {
         ThreadPool threadPool;
     public:
         explicit Server(int port, TradingEngine &tradingEngine, size_t numThreads = 4);
-        Server(int port, TradingEngine & engine);
         ~Server();
 
         void init();

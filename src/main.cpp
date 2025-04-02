@@ -9,6 +9,7 @@
 
 int main() {
     try {
+        std::cout << "-------------------- STARTING SERVER --------------------" << std::endl;
         // Setup database connection from environment variables
         std::string host = std::getenv("DB_HOST") ? std::getenv("DB_HOST") : "localhost";
         std::string port = std::getenv("DB_PORT") ? std::getenv("DB_PORT") : "5432";
@@ -16,6 +17,12 @@ int main() {
         std::string password = std::getenv("DB_PASSWORD") ? std::getenv("DB_PASSWORD") : "exchange_password";
         std::string dbname = std::getenv("DB_NAME") ? std::getenv("DB_NAME") : "exchange_db";
         
+        std::cout << "Database parameters:" << std::endl;
+        std::cout << "- Host: " << host << std::endl;
+        std::cout << "- Port: " << port << std::endl;
+        std::cout << "- User: " << user << std::endl;
+        std::cout << "- Database: " << dbname << std::endl;
+
         std::string connString = 
             "host=" + host + 
             " port=" + port + 
@@ -50,18 +57,23 @@ int main() {
             throw std::runtime_error("Failed to connect to database after " + std::to_string(maxRetries) + " attempts");
         }
         
-        // Create trading engine
+        std::cout << "Creating trading engine..." << std::endl;
         TradingEngine tradingEngine;
+        std::cout << "Trading engine created successfully" << std::endl;
         
-        // Start server on port 12345
-        Server server(12345, tradingEngine);
+        std::cout << "Creating server on port 12345..." << std::endl;
+        Server server(12345, tradingEngine, 4);
+        std::cout << "Server created successfully" << std::endl;
+        
+        std::cout << "Starting server..." << std::endl;
         server.run();
+        std::cout << "Server running..." << std::endl;
         
         // Close database connection when done
         DBConnection::close();
     }
     catch (const std::exception& e) {
-        std::cerr << "ERROR: " << e.what() << std::endl;
+        std::cerr << "FATAL ERROR: " << e.what() << std::endl;
         return 1;
     }
     
