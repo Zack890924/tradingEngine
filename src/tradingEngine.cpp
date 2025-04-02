@@ -172,46 +172,76 @@ bool TradingEngine::placeOrder(const std::string &account_id, const std::string 
 // Database-backed implementation
 int TradingEngine::placeOrder(const std::string& accountId, const std::string& symbol, 
                             double amount, double limitPrice) {
-    // Validate account exists
-    if (!accountRepo.accountExists(accountId)) {
-        return -1; // Account doesn't exist
-    }
-
-    // For buy orders, check if enough balance
-    if (amount > 0) { // Buy order
-        double cost = amount * limitPrice;
-        double balance = accountRepo.getBalance(accountId);
-        
-        if (balance < cost) {
-            return -1; // Insufficient funds
+    std::cout << "==== PLACING ORDER ====" << std::endl;
+    std::cout << "Account: " << accountId << ", Symbol: " << symbol 
+              << ", Amount: " << amount << ", Limit: " << limitPrice << std::endl;
+    
+    try {
+        // Check if account exists
+        if (!accountRepo.accountExists(accountId)) {
+            std::cerr << "ERROR: Account does not exist: " << accountId << std::endl;
+            return -1;
         }
         
-        // Deduct the cost from account balance
-        if (!accountRepo.updateBalance(accountId, balance - cost)) {
-            return -1; // Failed to update balance
-        }
-    } else { // Sell order
-        // Check if enough shares to sell
-        double shares = accountRepo.getPosition(accountId, symbol);
-        if (shares < std::abs(amount)) {
-            return -1; // Insufficient shares
+        // Check balance for buy orders
+        if (amount > 0) {
+            double cost = amount * limitPrice;
+            double balance = accountRepo.getBalance(accountId);
+            
+            std::cout << "Buy order - Cost: " << cost << ", Available balance: " << balance << std::endl;
+            
+            if (balance < cost) {
+                std::cerr << "ERROR: Insufficient balance for buy order" << std::endl;
+                return -1;
+            }
+            
+            // Deduct the cost from account
+            if (!accountRepo.updateBalance(accountId, balance - cost)) {
+                std::cerr << "ERROR: Failed to update balance" << std::endl;
+                return -1;
+            }
+            
+            std::cout << "✅ Successfully deducted " << cost << " from account balance" << std::endl;
+        } 
+        // Check shares for sell orders
+        else if (amount < 0) {
+            double shares = accountRepo.getPosition(accountId, symbol);
+            
+            std::cout << "Sell order - Required shares: " << std::abs(amount) 
+                      << ", Available shares: " << shares << std::endl;
+            
+            if (shares < std::abs(amount)) {
+                std::cerr << "ERROR: Insufficient shares for sell order" << std::endl;
+                return -1;
+            }
+            
+            // Deduct shares from account
+            if (!accountRepo.updatePosition(accountId, symbol, shares - std::abs(amount))) {
+                std::cerr << "ERROR: Failed to update position" << std::endl;
+                return -1;
+            }
+            
+            std::cout << "✅ Successfully deducted " << std::abs(amount) << " shares from account position" << std::endl;
+        } else {
+            std::cerr << "ERROR: Order amount cannot be zero" << std::endl;
+            return -1;
         }
         
-        // Deduct shares from account
-        if (!accountRepo.updatePosition(accountId, symbol, shares - std::abs(amount))) {
-            return -1; // Failed to update position
+        // Create the order
+        int orderId = orderRepo.createOrder(accountId, symbol, amount, limitPrice);
+        
+        if (orderId > 0) {
+            std::cout << "✅ Successfully created order with ID: " << orderId << std::endl;
+        } else {
+            std::cerr << "ERROR: Failed to create order in database" << std::endl;
         }
+        
+        return orderId;
+        
+    } catch (const std::exception& e) {
+        std::cerr << "ERROR: Exception in placeOrder: " << e.what() << std::endl;
+        return -1;
     }
-    
-    // Create the order
-    int orderId = orderRepo.createOrder(accountId, symbol, amount, limitPrice);
-    
-    // Try to match the order immediately
-    if (orderId > 0) {
-        matchOrders(symbol);
-    }
-    
-    return orderId;
 }
 
 void TradingEngine::trade(std::shared_ptr<Order> buyOrder, std::shared_ptr<Order> sellOrder, int qty, double tradePrice){
@@ -483,7 +513,88 @@ void TradingEngine::processCreate(const tinyxml2::XMLElement *root, tinyxml2::XM
         }
     }
     
-    // Process symbol creation - similar detailed debug needed
+    // Process symbol creation - add detailed implementation
+    for (const tinyxml2::XMLElement *symbolElem = root->FirstChildElement("symbol"); 
+         symbolElem; 
+         symbolElem = symbolElem->NextSiblingElement("symbol")) {
+        
+        const char* symStr = symbolElem->Attribute("sym");
+        if (!symStr) {
+            std::cerr << "ERROR: Missing sym attribute for symbol" << std::endl;
+            tinyxml2::XMLElement *errorElem = respDoc->NewElement("error");
+            errorElem->SetText("Missing sym attribute");
+            results->InsertEndChild(errorElem);
+            continue;
+        }
+        
+        std::string symbol = symStr;
+        std::cout << "Processing symbol: " << symbol << std::endl;
+        
+        // Process each account within the symbol
+        for (const tinyxml2::XMLElement *accountElem = symbolElem->FirstChildElement("account"); 
+             accountElem; 
+             accountElem = accountElem->NextSiblingElement("account")) {
+            
+            const char* idStr = accountElem->Attribute("id");
+            const char* sharesText = accountElem->GetText();
+            
+            std::cout << "Adding symbol to account - id: " << (idStr ? idStr : "null") 
+                      << ", shares: " << (sharesText ? sharesText : "null") << std::endl;
+            
+            if (!idStr || !sharesText) {
+                std::cerr << "ERROR: Missing id or shares for symbol position" << std::endl;
+                tinyxml2::XMLElement *errorElem = respDoc->NewElement("error");
+                errorElem->SetAttribute("sym", symbol.c_str());
+                if (idStr) errorElem->SetAttribute("id", idStr);
+                errorElem->SetText("Missing account ID or shares");
+                results->InsertEndChild(errorElem);
+                continue;
+            }
+            
+            double shares = 0.0;
+            try {
+                shares = std::stod(sharesText);
+            } catch (const std::exception& e) {
+                std::cerr << "ERROR: Invalid shares format: " << e.what() << std::endl;
+                tinyxml2::XMLElement *errorElem = respDoc->NewElement("error");
+                errorElem->SetAttribute("sym", symbol.c_str());
+                errorElem->SetAttribute("id", idStr);
+                errorElem->SetText("Invalid shares format");
+                results->InsertEndChild(errorElem);
+                continue;
+            }
+            
+            bool success = false;
+            try {
+                // Add symbol to account in database
+                success = addSymbolToAccount(symbol, idStr, shares);
+                
+                if (success) {
+                    std::cout << "✅ Successfully added " << shares << " shares of " << symbol 
+                              << " to account " << idStr << std::endl;
+                    tinyxml2::XMLElement *createdElem = respDoc->NewElement("created");
+                    createdElem->SetAttribute("sym", symbol.c_str());
+                    createdElem->SetAttribute("id", idStr);
+                    results->InsertEndChild(createdElem);
+                } else {
+                    std::cerr << "ERROR: Failed to add symbol to account" << std::endl;
+                    tinyxml2::XMLElement *errorElem = respDoc->NewElement("error");
+                    errorElem->SetAttribute("sym", symbol.c_str());
+                    errorElem->SetAttribute("id", idStr);
+                    errorElem->SetText("Failed to add symbol to account");
+                    results->InsertEndChild(errorElem);
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "ERROR: Exception adding symbol to account: " << e.what() << std::endl;
+                tinyxml2::XMLElement *errorElem = respDoc->NewElement("error");
+                errorElem->SetAttribute("sym", symbol.c_str());
+                errorElem->SetAttribute("id", idStr);
+                errorElem->SetText(std::string("Database error: ").append(e.what()).c_str());
+                results->InsertEndChild(errorElem);
+            }
+        }
+    }
+    
     std::cout << "==== CREATE REQUEST PROCESSING COMPLETE ====" << std::endl;
 }
 
@@ -544,132 +655,128 @@ void TradingEngine::processTransaction(const tinyxml2::XMLElement *root, tinyxml
         std::cout << "Processing child element: " << elemType << std::endl;
         
         if (elemType == "order") {
-            // Handle order element
-            const char* symStr = childElem->Attribute("sym");
-            const char* amountStr = childElem->Attribute("amount");
-            const char* limitStr = childElem->Attribute("limit");
-            
-            std::cout << "Order details - symbol: " << (symStr ? symStr : "null") 
-                      << ", amount: " << (amountStr ? amountStr : "null")
-                      << ", limit: " << (limitStr ? limitStr : "null") << std::endl;
-            
-            if (!symStr || !amountStr || !limitStr) {
-                std::cerr << "ERROR: Missing required attributes for order" << std::endl;
-                tinyxml2::XMLElement *errorElem = results->GetDocument()->NewElement("error");
-                if (symStr) errorElem->SetAttribute("sym", symStr);
-                if (amountStr) errorElem->SetAttribute("amount", amountStr);
-                if (limitStr) errorElem->SetAttribute("limit", limitStr);
-                errorElem->SetText("Missing order attributes");
-                results->InsertEndChild(errorElem);
-                continue;
-            }
-            
-            // Create a new order - placeholder for your actual order creation
-            std::cout << "Creating order in database..." << std::endl;
-            
-            try {
-                double amount = std::stod(amountStr);
-                double limit = std::stod(limitStr);
-                
-                // Create order in database
-                int orderId = orderRepo.createOrder(accountId, symStr, amount, limit);
-                
-                if (orderId > 0) {
-                    std::cout << "✅ Successfully created order with ID: " << orderId << std::endl;
-                    tinyxml2::XMLElement *openedElem = results->GetDocument()->NewElement("opened");
-                    openedElem->SetAttribute("id", std::to_string(orderId).c_str());
-                    openedElem->SetAttribute("sym", symStr);
-                    openedElem->SetAttribute("amount", amountStr);
-                    openedElem->SetAttribute("limit", limitStr);
-                    results->InsertEndChild(openedElem);
-                } else {
-                    std::cerr << "ERROR: Failed to create order in database" << std::endl;
-                    tinyxml2::XMLElement *errorElem = results->GetDocument()->NewElement("error");
-                    errorElem->SetAttribute("sym", symStr);
-                    errorElem->SetText("Order creation failed");
-                    results->InsertEndChild(errorElem);
-                }
-            } catch (const std::exception& e) {
-                std::cerr << "ERROR: Exception creating order: " << e.what() << std::endl;
-                tinyxml2::XMLElement *errorElem = results->GetDocument()->NewElement("error");
-                errorElem->SetAttribute("sym", symStr);
-                errorElem->SetText(std::string("Order error: ").append(e.what()).c_str());
-                results->InsertEndChild(errorElem);
-            }
+            processOrder(childElem, results, accountId);
         }
-        // Similar handling for query and cancel operations
+        else if (elemType == "query") {
+            processQuery(childElem, results, accountId);
+        }
+        else if (elemType == "cancel") {
+            processCancel(childElem, results, accountId);
+        }
     }
     
     std::cout << "==== TRANSACTION REQUEST PROCESSING COMPLETE ====" << std::endl;
 }
 
 void TradingEngine::processOrder(const tinyxml2::XMLElement *orderElem, tinyxml2::XMLElement *results, const std::string &accountId) {
-    std::cout << "DEBUG: Processing order element" << std::endl;
+    std::cout << "==== PROCESSING ORDER ====" << std::endl;
     
-    // Get required attributes
+    // Get attributes
     const char* symStr = orderElem->Attribute("sym");
     const char* amountStr = orderElem->Attribute("amount");
     const char* limitStr = orderElem->Attribute("limit");
     
+    std::cout << "Order details - account: " << accountId
+              << ", symbol: " << (symStr ? symStr : "null")
+              << ", amount: " << (amountStr ? amountStr : "null")
+              << ", limit: " << (limitStr ? limitStr : "null") << std::endl;
+    
     if (!symStr || !amountStr || !limitStr) {
-        std::cout << "DEBUG: Missing required attributes in order element" << std::endl;
+        std::cerr << "ERROR: Missing required attributes for order" << std::endl;
         tinyxml2::XMLElement *errorElem = results->GetDocument()->NewElement("error");
         if (symStr) errorElem->SetAttribute("sym", symStr);
-        if (amountStr) errorElem->SetAttribute("amount", amountStr);
-        if (limitStr) errorElem->SetAttribute("limit", limitStr);
-        errorElem->SetText("Missing required attributes");
+        errorElem->SetText("Missing required order attributes");
         results->InsertEndChild(errorElem);
         return;
     }
     
-    std::string symbol = symStr;
     double amount = 0.0;
     double limitPrice = 0.0;
     
     try {
         amount = std::stod(amountStr);
         limitPrice = std::stod(limitStr);
+        
+        std::cout << "Parsed values - amount: " << amount << ", limit: " << limitPrice << std::endl;
     } catch (const std::exception& e) {
-        std::cout << "DEBUG: Invalid numeric format: " << e.what() << std::endl;
+        std::cerr << "ERROR: Invalid numeric format: " << e.what() << std::endl;
         tinyxml2::XMLElement *errorElem = results->GetDocument()->NewElement("error");
         errorElem->SetAttribute("sym", symStr);
-        errorElem->SetAttribute("amount", amountStr);
-        errorElem->SetAttribute("limit", limitStr);
-        errorElem->SetText("Invalid numeric format");
+        errorElem->SetText("Invalid numeric format in order");
         results->InsertEndChild(errorElem);
         return;
     }
     
-    // Place the order
-    int orderId = placeOrder(accountId, symbol, amount, limitPrice);
+    // Debug database state before order placement
+    std::cout << "Debug: Checking account balance and position before order" << std::endl;
+    try {
+        double balance = accountRepo.getBalance(accountId);
+        double position = accountRepo.getPosition(accountId, symStr);
+        std::cout << "Account " << accountId << " has balance: " << balance 
+                  << " and position in " << symStr << ": " << position << std::endl;
+    } catch (const std::exception& e) {
+        std::cout << "DEBUG: Error checking balance/position: " << e.what() << std::endl;
+    }
     
-    if (orderId > 0) {
-        std::cout << "DEBUG: Order placed successfully, ID: " << orderId << std::endl;
-        tinyxml2::XMLElement *openedElem = results->GetDocument()->NewElement("opened");
-        openedElem->SetAttribute("sym", symStr);
-        openedElem->SetAttribute("amount", amountStr);
-        openedElem->SetAttribute("limit", limitStr);
-        openedElem->SetAttribute("id", std::to_string(orderId).c_str());
-        results->InsertEndChild(openedElem);
-    } else {
-        std::cout << "DEBUG: Order placement failed" << std::endl;
+    // Place the order with better error handling
+    try {
+        int orderId = placeOrder(accountId, symStr, amount, limitPrice);
+        
+        if (orderId > 0) {
+            std::cout << "✅ Successfully placed order with ID: " << orderId << std::endl;
+            
+            tinyxml2::XMLElement *openedElem = results->GetDocument()->NewElement("opened");
+            openedElem->SetAttribute("id", std::to_string(orderId).c_str());
+            openedElem->SetAttribute("sym", symStr);
+            openedElem->SetAttribute("amount", amountStr);
+            openedElem->SetAttribute("limit", limitStr);
+            results->InsertEndChild(openedElem);
+        } else {
+            std::string errorMsg;
+            
+            // Check for specific error conditions
+            if (amount > 0) {  // Buy order
+                double cost = amount * limitPrice;
+                double balance = accountRepo.getBalance(accountId);
+                if (balance < cost) {
+                    errorMsg = "Insufficient balance for buy order";
+                }
+            } else {  // Sell order
+                double shares = accountRepo.getPosition(accountId, symStr);
+                if (shares < std::abs(amount)) {
+                    errorMsg = "Insufficient shares for sell order";
+                }
+            }
+            
+            if (errorMsg.empty()) {
+                errorMsg = "Order creation failed";
+            }
+            
+            std::cerr << "ERROR: " << errorMsg << std::endl;
+            tinyxml2::XMLElement *errorElem = results->GetDocument()->NewElement("error");
+            errorElem->SetAttribute("sym", symStr);
+            errorElem->SetText(errorMsg.c_str());
+            results->InsertEndChild(errorElem);
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "ERROR: Exception placing order: " << e.what() << std::endl;
         tinyxml2::XMLElement *errorElem = results->GetDocument()->NewElement("error");
         errorElem->SetAttribute("sym", symStr);
-        errorElem->SetAttribute("amount", amountStr);
-        errorElem->SetAttribute("limit", limitStr);
-        errorElem->SetText("Order placement failed");
+        errorElem->SetText(std::string("Order error: ").append(e.what()).c_str());
         results->InsertEndChild(errorElem);
     }
+    
+    std::cout << "==== ORDER PROCESSING COMPLETE ====" << std::endl;
 }
 
 void TradingEngine::processQuery(const tinyxml2::XMLElement *queryElem, tinyxml2::XMLElement *results, const std::string &accountId) {
-    std::cout << "DEBUG: Processing query element" << std::endl;
+    std::cout << "==== PROCESSING QUERY ====" << std::endl;
     
     const char* idStr = queryElem->Attribute("id");
     if (!idStr) {
-        std::cout << "DEBUG: Missing id attribute in query element" << std::endl;
+        std::cerr << "ERROR: Missing id attribute in query" << std::endl;
         tinyxml2::XMLElement *errorElem = results->GetDocument()->NewElement("error");
-        errorElem->SetText("Missing order ID");
+        errorElem->SetText("Missing order id in query");
         results->InsertEndChild(errorElem);
         return;
     }
@@ -677,11 +784,32 @@ void TradingEngine::processQuery(const tinyxml2::XMLElement *queryElem, tinyxml2
     int orderId = 0;
     try {
         orderId = std::stoi(idStr);
+        std::cout << "Querying order ID: " << orderId << std::endl;
     } catch (const std::exception& e) {
-        std::cout << "DEBUG: Invalid order ID format: " << e.what() << std::endl;
+        std::cerr << "ERROR: Invalid order ID format: " << e.what() << std::endl;
         tinyxml2::XMLElement *errorElem = results->GetDocument()->NewElement("error");
         errorElem->SetAttribute("id", idStr);
         errorElem->SetText("Invalid order ID format");
+        results->InsertEndChild(errorElem);
+        return;
+    }
+    
+    auto order = orderRepo.getOrder(orderId);
+    if (!order) {
+        std::cerr << "ERROR: Order not found: " << orderId << std::endl;
+        tinyxml2::XMLElement *errorElem = results->GetDocument()->NewElement("error");
+        errorElem->SetAttribute("id", idStr);
+        errorElem->SetText("Order not found");
+        results->InsertEndChild(errorElem);
+        return;
+    }
+    
+    // Check if order belongs to this account
+    if (order->getAccountId() != accountId) {
+        std::cerr << "ERROR: Order " << orderId << " does not belong to account " << accountId << std::endl;
+        tinyxml2::XMLElement *errorElem = results->GetDocument()->NewElement("error");
+        errorElem->SetAttribute("id", idStr);
+        errorElem->SetText("Order does not belong to this account");
         results->InsertEndChild(errorElem);
         return;
     }
@@ -690,65 +818,43 @@ void TradingEngine::processQuery(const tinyxml2::XMLElement *queryElem, tinyxml2
     tinyxml2::XMLElement *statusElem = results->GetDocument()->NewElement("status");
     statusElem->SetAttribute("id", idStr);
     
-    // Get order status
-    auto statuses = queryOrder(orderId);
-    
-    if (statuses.empty()) {
-        std::cout << "DEBUG: Order not found: " << orderId << std::endl;
-        tinyxml2::XMLElement *errorElem = results->GetDocument()->NewElement("error");
-        errorElem->SetAttribute("id", idStr);
-        errorElem->SetText("Order not found");
-        results->InsertEndChild(errorElem);
-        return;
-    }
-    
-    // Add status details - simplified for now
-    bool hasOpen = false;
-    bool hasCanceled = false;
-    bool hasExecuted = false;
-    
-    for (const auto& status : statuses) {
-        if (status == OrderStatus::OPEN && !hasOpen) {
-            tinyxml2::XMLElement *openElem = results->GetDocument()->NewElement("open");
-            openElem->SetAttribute("shares", "100"); // Placeholder
-            statusElem->InsertEndChild(openElem);
-            hasOpen = true;
-        } 
-        else if (status == OrderStatus::CANCELED && !hasCanceled) {
-            tinyxml2::XMLElement *canceledElem = results->GetDocument()->NewElement("canceled");
-            canceledElem->SetAttribute("shares", "100"); // Placeholder
-            canceledElem->SetAttribute("time", std::to_string(time(nullptr)).c_str());
-            statusElem->InsertEndChild(canceledElem);
-            hasCanceled = true;
-        }
-        else if (status == OrderStatus::EXECUTED && !hasExecuted) {
-            tinyxml2::XMLElement *executedElem = results->GetDocument()->NewElement("executed");
-            executedElem->SetAttribute("shares", "100"); // Placeholder
-            executedElem->SetAttribute("price", "100.0"); // Placeholder
-            executedElem->SetAttribute("time", std::to_string(time(nullptr)).c_str());
-            statusElem->InsertEndChild(executedElem);
-            hasExecuted = true;
-        }
-    }
-    
-    // If no specific status was added, add a default one
-    if (!hasOpen && !hasCanceled && !hasExecuted) {
+    // Add open status if order is still open
+    if (order->getStatus() == OrderStatus::OPEN && order->getOpenAmount() != 0) {
         tinyxml2::XMLElement *openElem = results->GetDocument()->NewElement("open");
-        openElem->SetAttribute("shares", "100"); // Placeholder
+        openElem->SetAttribute("shares", std::to_string(std::abs(order->getOpenAmount())).c_str());
         statusElem->InsertEndChild(openElem);
     }
     
+    // Add executions
+    auto executions = orderRepo.getOrderExecutions(orderId);
+    for (const auto& exec : executions) {
+        tinyxml2::XMLElement *executedElem = results->GetDocument()->NewElement("executed");
+        executedElem->SetAttribute("shares", std::to_string(std::abs(exec.amount)).c_str());
+        executedElem->SetAttribute("price", std::to_string(exec.price).c_str());
+        executedElem->SetAttribute("time", exec.executedAt.c_str());
+        statusElem->InsertEndChild(executedElem);
+    }
+    
+    // Add canceled status if order was canceled
+    if (order->getStatus() == OrderStatus::CANCELED && order->getOpenAmount() != 0) {
+        tinyxml2::XMLElement *canceledElem = results->GetDocument()->NewElement("canceled");
+        canceledElem->SetAttribute("shares", std::to_string(std::abs(order->getOpenAmount())).c_str());
+        canceledElem->SetAttribute("time", std::to_string(order->getCancelTime()).c_str());
+        statusElem->InsertEndChild(canceledElem);
+    }
+    
     results->InsertEndChild(statusElem);
+    std::cout << "==== QUERY PROCESSING COMPLETE ====" << std::endl;
 }
 
 void TradingEngine::processCancel(const tinyxml2::XMLElement *cancelElem, tinyxml2::XMLElement *results, const std::string &accountId) {
-    std::cout << "DEBUG: Processing cancel element" << std::endl;
+    std::cout << "==== PROCESSING CANCEL ====" << std::endl;
     
     const char* idStr = cancelElem->Attribute("id");
     if (!idStr) {
-        std::cout << "DEBUG: Missing id attribute in cancel element" << std::endl;
+        std::cerr << "ERROR: Missing id attribute in cancel" << std::endl;
         tinyxml2::XMLElement *errorElem = results->GetDocument()->NewElement("error");
-        errorElem->SetText("Missing order ID");
+        errorElem->SetText("Missing order id in cancel request");
         results->InsertEndChild(errorElem);
         return;
     }
@@ -756,11 +862,32 @@ void TradingEngine::processCancel(const tinyxml2::XMLElement *cancelElem, tinyxm
     int orderId = 0;
     try {
         orderId = std::stoi(idStr);
+        std::cout << "Canceling order ID: " << orderId << std::endl;
     } catch (const std::exception& e) {
-        std::cout << "DEBUG: Invalid order ID format: " << e.what() << std::endl;
+        std::cerr << "ERROR: Invalid order ID format: " << e.what() << std::endl;
         tinyxml2::XMLElement *errorElem = results->GetDocument()->NewElement("error");
         errorElem->SetAttribute("id", idStr);
         errorElem->SetText("Invalid order ID format");
+        results->InsertEndChild(errorElem);
+        return;
+    }
+    
+    // Check if order exists and belongs to this account
+    auto order = orderRepo.getOrder(orderId);
+    if (!order) {
+        std::cerr << "ERROR: Order not found: " << orderId << std::endl;
+        tinyxml2::XMLElement *errorElem = results->GetDocument()->NewElement("error");
+        errorElem->SetAttribute("id", idStr);
+        errorElem->SetText("Order not found");
+        results->InsertEndChild(errorElem);
+        return;
+    }
+    
+    if (order->getAccountId() != accountId) {
+        std::cerr << "ERROR: Order " << orderId << " does not belong to account " << accountId << std::endl;
+        tinyxml2::XMLElement *errorElem = results->GetDocument()->NewElement("error");
+        errorElem->SetAttribute("id", idStr);
+        errorElem->SetText("Order does not belong to this account");
         results->InsertEndChild(errorElem);
         return;
     }
@@ -769,23 +896,22 @@ void TradingEngine::processCancel(const tinyxml2::XMLElement *cancelElem, tinyxm
     bool success = cancelOrder(orderId);
     
     if (success) {
-        std::cout << "DEBUG: Order canceled successfully: " << orderId << std::endl;
+        std::cout << "✅ Successfully canceled order: " << orderId << std::endl;
+        
+        // Get the updated order to get cancellation details
+        auto canceledOrder = orderRepo.getOrder(orderId);
+        
         tinyxml2::XMLElement *canceledElem = results->GetDocument()->NewElement("canceled");
         canceledElem->SetAttribute("id", idStr);
-        
-        // Add details about cancellation
-        tinyxml2::XMLElement *cancelDetailsElem = results->GetDocument()->NewElement("canceled");
-        cancelDetailsElem->SetAttribute("shares", "100"); // Placeholder
-        cancelDetailsElem->SetAttribute("time", std::to_string(time(nullptr)).c_str());
-        canceledElem->InsertEndChild(cancelDetailsElem);
-        
         results->InsertEndChild(canceledElem);
     } else {
-        std::cout << "DEBUG: Order cancellation failed: " << orderId << std::endl;
+        std::cerr << "ERROR: Failed to cancel order: " << orderId << std::endl;
         tinyxml2::XMLElement *errorElem = results->GetDocument()->NewElement("error");
         errorElem->SetAttribute("id", idStr);
         errorElem->SetText("Failed to cancel order");
         results->InsertEndChild(errorElem);
     }
+    
+    std::cout << "==== CANCEL PROCESSING COMPLETE ====" << std::endl;
 }
 
