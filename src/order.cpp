@@ -72,18 +72,35 @@ const std::vector<Record> &Order::getRecords() const {
     return records;
 }
 
+double Order::getAmount() const {
+    return side == OrderSide::BUY ? quantity : -quantity;
+}
 
-// void Order::addFilled(int qty){
-//     if(qty < 0){
-//         throw std::runtime_error("Cannot add negative quantity");
-//     }
-//     if(filled + qty + cancelled > quantity){
-//         throw std::runtime_error("Cannot fill more than the order quantity");
-//     }
+OrderStatus Order::getStatus() const {
+    return status;
+}
 
-//     filled += quantity;
-// }
+void Order::setStatus(OrderStatus newStatus) {
+    status = newStatus;
+}
 
+void Order::setOpenAmount(double amount) {
+    open_amount = amount;
+}
+
+double Order::getOpenAmount() const {
+    return side == OrderSide::BUY ? (quantity - filled - cancelled) : -(quantity - filled - cancelled);
+}
+
+void Order::reduceOpenQty(int qty) {
+    if (qty < 0) {
+        throw std::runtime_error("Cannot reduce by negative quantity");
+    }
+    if (qty > quantity - filled - cancelled) {
+        throw std::runtime_error("Cannot reduce more than the open quantity");
+    }
+    filled += qty;
+}
 
 void Order::addCancel(int qty){
     if(qty < 0){
@@ -95,21 +112,9 @@ void Order::addCancel(int qty){
     cancelled += qty;
 }
 
-// void Order::addRecord(const Record &record){
-//     if(record.getShares() < 0){
-//         throw std::runtime_error("Shares cannot be negative");
-//     }
-//     if(getOpenQuantity() < record.getShares()){
-//         throw std::runtime_error("Cannot add more shares than the open quantity");
-//     }
-//     records.push_back(record);
-// }
-
-
 void Order::setCancelTime(long t){
     cancelled_timestamp = t;
 }
-
 
 void Order::addExecution(int qty, const Record &record){
     if(record.getShares() < 0){
@@ -129,10 +134,6 @@ void Order::addExecution(int qty, const Record &record){
 
     filled += qty;
     records.push_back(record);
-
-
-
-
 }
 
 

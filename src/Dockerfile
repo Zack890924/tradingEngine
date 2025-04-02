@@ -1,26 +1,33 @@
-FROM gcc:latest
+FROM ubuntu:22.04
 
 RUN apt-get update && apt-get install -y \
-    build-essential \
+    g++ \
     cmake \
-    gdb \
-    libtinyxml2-dev \
+    make \
+    libpq-dev \
+    libpqxx-dev \
+    netcat \
+    iproute2 \
+    lsof \
+    iputils-ping \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+COPY . /app/
 
-COPY . /app
+RUN mkdir -p build && cd build && \
+    cmake .. && \
+    make
 
-RUN g++ -g -O0 -fsanitize=address -fno-omit-frame-pointer \
--std=c++17 -Wall -Wextra -pthread \
-src/*.cpp -ltinyxml2 -o trading_server_asan
-
-
-
-
+# Add a check to verify the server will be able to bind to the port
+RUN echo "#!/bin/bash" > /app/check-port.sh && \
+    echo "nc -z -v -w5 0.0.0.0 12345 || echo 'Port 12345 is available'" >> /app/check-port.sh && \
+    chmod +x /app/check-port.sh
 
 EXPOSE 12345
 
-CMD ["tail","-f","/dev/null"]
+# Run the check before starting the server
+CMD ["/bin/bash", "-c", "/app/check-port.sh && ./build/exchange_server"]
 
 

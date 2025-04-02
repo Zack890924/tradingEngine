@@ -1,12 +1,39 @@
 version: '3'
+
 services:
-  exchange:
+  postgres:
+    image: postgres:14
+    environment:
+      POSTGRES_USER: exchange
+      POSTGRES_PASSWORD: exchange_password
+      POSTGRES_DB: exchange_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5433:5432"  # Changed from 5432:5432 to use port 5433 on host
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U exchange -d exchange_db"]  # Specify correct database name
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: always
+
+  exchange_server:
     build:
-      context: .
-      dockerfile: src/Dockerfile
-    container_name: exchange_server
+      context: ./src
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "12345:12345"
-    restart: always
-    volumes:
-      - ./logs:/var/log/erss
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: exchange
+      DB_PASSWORD: exchange_password
+      DB_NAME: exchange_db
+    restart: on-failure
+
+volumes:
+  postgres_data:

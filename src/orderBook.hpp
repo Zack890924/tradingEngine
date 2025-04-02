@@ -1,38 +1,30 @@
-#ifndef ORDERBOOK_HPP
-#define ORDERBOOK_HPP
+#ifndef ORDER_BOOK_HPP
+#define ORDER_BOOK_HPP
+
 #include "order.hpp"
-#include <set>
 #include <memory>
-
-//price high to low 
-struct BuyOrderCompare{
-    bool operator()(const std::shared_ptr<Order> &a, const std::shared_ptr<Order> &b) const{
-        if(a->getLimitPrice() != b->getLimitPrice()){
-            return a->getLimitPrice() > b->getLimitPrice();
-        }
-        return a->getTimestamp() < b->getTimestamp();
-    }
-};
-
-//price low to high
-struct SellOrderCompare{
-    bool operator()(const std::shared_ptr<Order> &a, const std::shared_ptr<Order> &b) const{
-        if(a->getLimitPrice() != b->getLimitPrice()){
-            return a->getLimitPrice() < b->getLimitPrice();
-        }
-        return a->getTimestamp() < b->getTimestamp();
-    }
-};
-
-
+#include <vector>
+#include <map>
+#include <string>
 
 class OrderBook {
-    public:
-        std::multiset<std::shared_ptr<Order>, BuyOrderCompare> buyOrders;
-        std::multiset<std::shared_ptr<Order>, SellOrderCompare> sellOrders;
-        mutable std::mutex mtx;
-        OrderBook() = default;
+public:
+    void addOrder(std::shared_ptr<Order> order);
+    std::vector<std::shared_ptr<Order>> &getBuyOrders();
+    std::vector<std::shared_ptr<Order>> &getSellOrders();
+    std::shared_ptr<Order> findOrder(int orderId);
+    std::shared_ptr<Order> findAndRemoveOrder(int orderId);
+    void updateOrRemoveOrder(std::shared_ptr<Order> order);
+    
+    // Add other methods as needed
+private:
+    std::vector<std::shared_ptr<Order>> buyOrders;
+    std::vector<std::shared_ptr<Order>> sellOrders;
+    std::map<int, std::shared_ptr<Order>> ordersById;
+    
+    // Internal helpers
+    void sortBuyOrders();
+    void sortSellOrders();
 };
 
-
-#endif //ORDERBOOK_HPP
+#endif

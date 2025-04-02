@@ -8,33 +8,26 @@ Account::Account(const std::string id, double balance) : account_id(id), balance
 Account::Account() : account_id(""), balance(0.0), frozen_balance(0.0) {}
 
 const std::string& Account::getAccountId() const {
-    // std::lock_guard<std::mutex> lock(mtx);
     return account_id;
 }
 
 double Account::getTotalBalance() const {
-    // std::lock_guard<std::mutex> lock(mtx);
     return balance;
 } 
 
 double Account::getFrozenBalance() const {
-    // std::lock_guard<std::mutex> lock(mtx);
     return frozen_balance;
 }
 
 double Account::getAvailableBalance() const {
-    // std::lock_guard<std::mutex> lock(mtx);
     return balance - frozen_balance;
 }
 
 void Account::addBalance(double amount){
-    // std::lock_guard<std::mutex> lock(mtx);
     balance += amount;
 }
 
-
 bool Account::freezeBalance(double amount){
-    // std::lock_guard<std::mutex> lock(mtx);
     if(amount <= getAvailableBalance()){
         frozen_balance += amount;
         return true;
@@ -43,113 +36,92 @@ bool Account::freezeBalance(double amount){
 }
 
 bool Account::unfreezeBalance(double amount){
-    // std::lock_guard<std::mutex> lock(mtx);
-    double actual = std::min(amount, frozen_balance);
-    frozen_balance -= actual;
-    return (actual > 0); 
+    if(amount <= frozen_balance){
+        frozen_balance -= amount;
+        return true;
+    }
+    return false;
 }
 
 void Account::deductFrozenFunds(double amount){
-    // std::lock_guard<std::mutex> lock(mtx);
     if(amount > frozen_balance){
-        throw std::runtime_error("amount exceeds frozen balance");
+        throw std::runtime_error("Attempting to deduct more funds than frozen");
     }
+    
     frozen_balance -= amount;
     balance -= amount;
+    
     if(balance < 0){
-        balance = 0;
+        throw std::runtime_error("Deduction resulted in negative balance");
     }
 }
 
 double Account::getTotalPosition(const std::string &symbol) const {
-    // std::lock_guard<std::mutex> lock(mtx);
     auto it = positions.find(symbol);
     if(it != positions.end()){
         return it->second;
     }
-    return 0.0;
+    return 0;
 }
 
 double Account::getFrozenPosition(const std::string &symbol) const {
-    // std::lock_guard<std::mutex> lock(mtx);
     auto it = frozen_positions.find(symbol);
     if(it != frozen_positions.end()){
         return it->second;
     }
-    return 0.0;
+    return 0;
 }
 
 double Account::getAvailablePosition(const std::string &symbol) const {
-    // std::lock_guard<std::mutex> lock(mtx);
     return getTotalPosition(symbol) - getFrozenPosition(symbol);
 }
 
 void Account::addPosition(const std::string &symbol, double shares){
     if(shares < 0){
-        throw std::runtime_error("Shares cannot be negative");
+        throw std::invalid_argument("Cannot add negative shares");
     }
-    // std::lock_guard<std::mutex> lock(mtx);
     positions[symbol] += shares;
 }
 
 bool Account::freezePosition(const std::string &symbol, double shares){
-    if(shares < 0){
-        throw std::runtime_error("Shares cannot be negative");
+    if(shares <= getAvailablePosition(symbol)){
+        frozen_positions[symbol] += shares;
+        return true;
     }
-    // std::lock_guard<std::mutex> lock(mtx);
-    double available = getAvailablePosition(symbol);
-    if (shares > available){
-        return false;
-    }
-    frozen_positions[symbol] += shares;
-    return true;
+    return false;
 }
 
-//order cancelled, unfreeze the position
 void Account::unfreezePosition(const std::string &symbol, double shares){
-    if(shares < 0){
-        throw std::runtime_error("Shares cannot be negative");
-    }
-    // std::lock_guard<std::mutex> lock(mtx);
     auto it = frozen_positions.find(symbol);
-    if(it == frozen_positions.end()){
-        return;
+    if(it == frozen_positions.end() || it->second < shares){
+        throw std::runtime_error("Attempting to unfreeze more shares than frozen");
     }
-    double actual = std::min(it->second, shares);
-    it->second -= actual;
-    if(it->second <= 0) {
-        frozen_positions.erase(it);
+    
+    frozen_positions[symbol] -= shares;
+    if(frozen_positions[symbol] <= 0){
+        frozen_positions.erase(symbol);
     }
 }
 
-//order executed, deduct frozen position
 void Account::deductFrozenPosition(const std::string &symbol, double shares){
-    if(shares < 0){
-        throw std::runtime_error("Shares cannot be negative");
+    auto frozenIt = frozen_positions.find(symbol);
+    if(frozenIt == frozen_positions.end() || frozenIt->second < shares){
+        throw std::runtime_error("Attempting to deduct more shares than frozen");
     }
-    // std::lock_guard<std::mutex> lock(mtx);
-
-    auto itF = frozen_positions.find(symbol);
-    if (itF == frozen_positions.end()) {
-        throw std::runtime_error("Symbol not found in frozen positions: " + symbol);
+    
+    auto posIt = positions.find(symbol);
+    if(posIt == positions.end() || posIt->second < shares){
+        throw std::runtime_error("Attempting to deduct more shares than owned");
     }
-    if (shares > itF->second) {
-        throw std::runtime_error("Deducting more shares than frozen for: " + symbol);
+    
+    frozen_positions[symbol] -= shares;
+    if(frozen_positions[symbol] <= 0){
+        frozen_positions.erase(symbol);
     }
-
-    itF->second -= shares;
-    if (itF->second <= 0) {
-        frozen_positions.erase(itF);
-    }
-
-    auto itPos = positions.find(symbol);
-    if (itPos == positions.end()) {
-        throw std::runtime_error("Symbol not found in total positions: " + symbol);
-    }
-
-    itPos->second -= shares;
-    if (itPos->second <= 0) {
-        positions.erase(itPos); 
+    
+    positions[symbol] -= shares;
+    if(positions[symbol] <= 0){
+        positions.erase(symbol);
     }
 }
 
