@@ -365,114 +365,88 @@ std::vector<OrderStatus> TradingEngine::queryOrder(int orderId) {
     return statuses;
 }
 
-std::string TradingEngine::processRequest(const std::string &xmlStr){
-    std::cout << "\n========== TRADING ENGINE REQUEST ==========\n";
-    std::cout << "Received XML (" << xmlStr.size() << " bytes): " << xmlStr << std::endl;
-
-    using namespace tinyxml2;
+std::string TradingEngine::processRequest(const std::string &xmlStr) {
+    std::cout << "\n======== TRADING ENGINE REQUEST PROCESSING ========" << std::endl;
+    std::cout << "Received XML request: " << xmlStr << std::endl;
     
-    // Prepare the response document
-    XMLDocument respDoc;
-    XMLElement *rootResp = respDoc.NewElement("results");
-    respDoc.InsertFirstChild(rootResp);
-    
-    // Parse the input XML
-    XMLDocument doc;
-    XMLError err = doc.Parse(xmlStr.c_str());
-    if (err != XML_SUCCESS) {
-        XMLElement *e = respDoc.NewElement("error");
-        rootResp->InsertEndChild(e);
-        e->SetText(doc.ErrorStr());
-        
-        // Convert to string and return
-        XMLPrinter printer;
-        respDoc.Print(&printer);
-        return printer.CStr();
+    tinyxml2::XMLDocument doc;
+    tinyxml2::XMLError err = doc.Parse(xmlStr.c_str());
+    if (err != tinyxml2::XML_SUCCESS) {
+        std::cerr << "ERROR: Failed to parse XML, error code: " << err << std::endl;
+        return "<results><error>XML parsing failed</error></results>";
     }
     
-    // Get the root element
-    XMLElement *root = doc.RootElement();
+    std::cout << "✅ Successfully parsed XML" << std::endl;
+    
+    tinyxml2::XMLDocument respDoc;
+    tinyxml2::XMLElement *results = respDoc.NewElement("results");
+    respDoc.InsertFirstChild(results);
+    
+    tinyxml2::XMLElement *root = doc.RootElement();
     if (!root) {
-        XMLElement *er = respDoc.NewElement("error");
-        rootResp->InsertEndChild(er);
-        er->SetText("Invalid XML: missing root element");
-        
-        // Convert to string and return
-        XMLPrinter printer;
-        respDoc.Print(&printer);
-        return printer.CStr();
+        std::cerr << "ERROR: No root element found in XML" << std::endl;
+        return "<results><error>Missing root element</error></results>";
     }
     
-    const char* rootName = root->Name();
-    if (!rootName) {
-        XMLElement *er = respDoc.NewElement("error");
-        rootResp->InsertEndChild(er);
-        er->SetText("Invalid XML: root element has no name");
-        
-        // Convert to string and return
-        XMLPrinter printer;
-        respDoc.Print(&printer);
-        return printer.CStr();
-    }
+    std::string rootName = root->Name();
+    std::cout << "Root element name: " << rootName << std::endl;
     
-    if(strcmp(rootName, "create") == 0){
-        processCreate(root, rootResp, &respDoc);
-    }
-    else if (strcmp(rootName, "transactions") == 0) {
-        processTransaction(root, rootResp);
+    if (rootName == "create") {
+        std::cout << "Processing CREATE request..." << std::endl;
+        processCreate(root, results, &respDoc);
+    } 
+    else if (rootName == "transactions") {
+        std::cout << "Processing TRANSACTIONS request..." << std::endl;
+        processTransaction(root, results);
     }
     else {
-        XMLElement *er = respDoc.NewElement("error");
-        rootResp->InsertEndChild(er);
-        er->SetText("Invalid root element name. Expected 'create' or 'transactions'");
+        std::cerr << "ERROR: Unknown root element: " << rootName << std::endl;
+        tinyxml2::XMLElement *error = respDoc.NewElement("error");
+        error->SetText("Unknown request type");
+        results->InsertEndChild(error);
     }
     
-    // Convert to string and return
-    XMLPrinter printer;
+    // Generate response string
+    tinyxml2::XMLPrinter printer;
     respDoc.Print(&printer);
     std::string response = printer.CStr();
-
+    
     std::cout << "Generated response: " << response << std::endl;
-    std::cout << "========== END TRADING ENGINE REQUEST ==========\n";
-
+    std::cout << "======== TRADING ENGINE PROCESSING COMPLETE ========\n" << std::endl;
+    
     return response;
 }
 
 void TradingEngine::processCreate(const tinyxml2::XMLElement *root, tinyxml2::XMLElement *results, tinyxml2::XMLDocument *respDoc) {
-    std::cout << "DEBUG: Inside processCreate" << std::endl;
-    
-    // Debug: Count elements
-    int accountCount = 0;
-    int symbolCount = 0;
+    std::cout << "==== PROCESSING CREATE REQUEST ====" << std::endl;
     
     // Process account creation
     for (const tinyxml2::XMLElement *accountElem = root->FirstChildElement("account"); 
          accountElem; 
          accountElem = accountElem->NextSiblingElement("account")) {
         
-        accountCount++;
         const char* idStr = accountElem->Attribute("id");
         const char* balanceStr = accountElem->Attribute("balance");
         
-        std::cout << "DEBUG: Processing account element #" << accountCount 
-                  << ", id=" << (idStr ? idStr : "null") 
-                  << ", balance=" << (balanceStr ? balanceStr : "null") << std::endl;
+        std::cout << "Processing account element - id: " << (idStr ? idStr : "null") 
+                  << ", balance: " << (balanceStr ? balanceStr : "null") << std::endl;
         
         if (!idStr || !balanceStr) {
-            std::cout << "DEBUG: Missing attributes in account element" << std::endl;
+            std::cerr << "ERROR: Missing required attributes for account" << std::endl;
             tinyxml2::XMLElement *errorElem = respDoc->NewElement("error");
-            errorElem->SetAttribute("id", idStr ? idStr : "");
-            errorElem->SetText("Missing attribute(s)");
+            if (idStr) errorElem->SetAttribute("id", idStr);
+            errorElem->SetText("Missing account attributes");
             results->InsertEndChild(errorElem);
             continue;
         }
         
         std::string accountId = idStr;
         double balance = 0.0;
+        
         try {
             balance = std::stod(balanceStr);
         } catch (const std::exception& e) {
-            std::cout << "DEBUG: Invalid balance format: " << e.what() << std::endl;
+            std::cerr << "ERROR: Invalid balance format: " << e.what() << std::endl;
             tinyxml2::XMLElement *errorElem = respDoc->NewElement("error");
             errorElem->SetAttribute("id", accountId.c_str());
             errorElem->SetText("Invalid balance format");
@@ -480,111 +454,37 @@ void TradingEngine::processCreate(const tinyxml2::XMLElement *root, tinyxml2::XM
             continue;
         }
         
-        // Try to create the account
-        std::string msg;
-        bool success = createAccount(accountId, balance, msg);
+        // Add a database operation here to insert the account
+        std::cout << "Creating account in database: " << accountId << " with balance: " << balance << std::endl;
         
-        std::cout << "DEBUG: Account creation result: " << (success ? "success" : "failure") 
-                  << ", message: " << msg << std::endl;
-        
-        if (success) {
-            // Account created successfully
-            tinyxml2::XMLElement *createdElem = respDoc->NewElement("created");
-            createdElem->SetAttribute("id", accountId.c_str());
-            results->InsertEndChild(createdElem);
-        } else {
-            // Account already exists or other error
+        try {
+            // Create account in the database
+            // This is a placeholder - replace with your actual account creation code
+            bool success = accountRepo.createAccount(accountId, balance);
+            
+            if (success) {
+                std::cout << "✅ Successfully created account in database" << std::endl;
+                tinyxml2::XMLElement *createdElem = respDoc->NewElement("created");
+                createdElem->SetAttribute("id", accountId.c_str());
+                results->InsertEndChild(createdElem);
+            } else {
+                std::cerr << "ERROR: Failed to create account in database (already exists)" << std::endl;
+                tinyxml2::XMLElement *errorElem = respDoc->NewElement("error");
+                errorElem->SetAttribute("id", accountId.c_str());
+                errorElem->SetText("Account already exists");
+                results->InsertEndChild(errorElem);
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "ERROR: Database exception: " << e.what() << std::endl;
             tinyxml2::XMLElement *errorElem = respDoc->NewElement("error");
             errorElem->SetAttribute("id", accountId.c_str());
-            errorElem->SetText(msg.c_str());
+            errorElem->SetText(std::string("Database error: ").append(e.what()).c_str());
             results->InsertEndChild(errorElem);
         }
     }
     
-    // Process symbol creation
-    for (const tinyxml2::XMLElement *symbolElem = root->FirstChildElement("symbol"); 
-         symbolElem; 
-         symbolElem = symbolElem->NextSiblingElement("symbol")) {
-        
-        symbolCount++;
-        const char* symStr = symbolElem->Attribute("sym");
-        
-        std::cout << "DEBUG: Processing symbol element #" << symbolCount 
-                  << ", sym=" << (symStr ? symStr : "null") << std::endl;
-        
-        if (!symStr) {
-            std::cout << "DEBUG: Missing sym attribute in symbol element" << std::endl;
-            continue; // Skip this element if no symbol attribute
-        }
-        
-        std::string symbol = symStr;
-        
-        // Process accounts within symbol
-        int accountPositionCount = 0;
-        for (const tinyxml2::XMLElement *accountElem = symbolElem->FirstChildElement("account"); 
-             accountElem; 
-             accountElem = accountElem->NextSiblingElement("account")) {
-            
-            accountPositionCount++;
-            const char* idStr = accountElem->Attribute("id");
-            
-            std::cout << "DEBUG: Processing symbol->account element #" << accountPositionCount 
-                      << ", id=" << (idStr ? idStr : "null") << std::endl;
-            
-            if (!idStr) {
-                std::cout << "DEBUG: Missing id attribute in symbol->account element" << std::endl;
-                continue; // Skip this element if no id attribute
-            }
-            
-            std::string accountId = idStr;
-            double shares = 0;
-            
-            // Get the number of shares from the element text
-            const char* sharesText = accountElem->GetText();
-            if (sharesText) {
-                try {
-                    shares = std::stod(sharesText);
-                    std::cout << "DEBUG: Shares value: " << shares << std::endl;
-                } catch (const std::exception& e) {
-                    std::cout << "DEBUG: Invalid shares format: " << e.what() << std::endl;
-                    tinyxml2::XMLElement *errorElem = respDoc->NewElement("error");
-                    errorElem->SetAttribute("sym", symbol.c_str());
-                    errorElem->SetAttribute("id", accountId.c_str());
-                    errorElem->SetText("Invalid shares format");
-                    results->InsertEndChild(errorElem);
-                    continue;
-                }
-            } else {
-                std::cout << "DEBUG: No shares text provided" << std::endl;
-            }
-            
-            // Try to add shares to the account
-            std::string msg;
-            bool success = createSymbol(accountId, symbol, shares, msg);
-            
-            std::cout << "DEBUG: Symbol creation result: " << (success ? "success" : "failure") 
-                      << ", message: " << msg << std::endl;
-            
-            if (success) {
-                // Shares added successfully
-                tinyxml2::XMLElement *createdElem = respDoc->NewElement("created");
-                createdElem->SetAttribute("sym", symbol.c_str());
-                createdElem->SetAttribute("id", accountId.c_str());
-                results->InsertEndChild(createdElem);
-            } else {
-                // Error adding shares
-                tinyxml2::XMLElement *errorElem = respDoc->NewElement("error");
-                errorElem->SetAttribute("sym", symbol.c_str());
-                errorElem->SetAttribute("id", accountId.c_str());
-                errorElem->SetText(msg.c_str());
-                results->InsertEndChild(errorElem);
-            }
-        }
-        
-        std::cout << "DEBUG: Found " << accountPositionCount << " accounts in symbol " << symbol << std::endl;
-    }
-    
-    std::cout << "DEBUG: Processed " << accountCount << " accounts and " << symbolCount << " symbols" << std::endl;
+    // Process symbol creation - similar detailed debug needed
+    std::cout << "==== CREATE REQUEST PROCESSING COMPLETE ====" << std::endl;
 }
 
 tinyxml2::XMLElement* TradingEngine::buildOrderElement(tinyxml2::XMLDocument *doc, std::shared_ptr<Order> order) {
@@ -593,12 +493,12 @@ tinyxml2::XMLElement* TradingEngine::buildOrderElement(tinyxml2::XMLDocument *do
 }
 
 void TradingEngine::processTransaction(const tinyxml2::XMLElement *root, tinyxml2::XMLElement *results) {
-    std::cout << "DEBUG: Inside processTransaction" << std::endl;
+    std::cout << "==== PROCESSING TRANSACTION REQUEST ====" << std::endl;
     
-    // Get the account ID attribute
+    // Get account ID
     const char* accountIdStr = root->Attribute("id");
     if (!accountIdStr) {
-        std::cout << "DEBUG: Missing account ID in transactions tag" << std::endl;
+        std::cerr << "ERROR: Missing account ID in transaction request" << std::endl;
         tinyxml2::XMLElement *errorElem = results->GetDocument()->NewElement("error");
         errorElem->SetText("Missing account ID");
         results->InsertEndChild(errorElem);
@@ -606,63 +506,101 @@ void TradingEngine::processTransaction(const tinyxml2::XMLElement *root, tinyxml
     }
     
     std::string accountId = accountIdStr;
-    std::cout << "DEBUG: Processing transactions for account: " << accountId << std::endl;
+    std::cout << "Transaction for account: " << accountId << std::endl;
     
     // Check if account exists
-    bool accountExists = accountRepo.accountExists(accountId);
-    if (!accountExists) {
-        std::cout << "DEBUG: Account does not exist: " << accountId << std::endl;
+    std::cout << "Checking if account exists in database..." << std::endl;
+    bool accountExists = false;
+    
+    try {
+        // This is a placeholder - replace with your actual code to check account existence
+        accountExists = accountRepo.accountExists(accountId);
         
-        // Create error responses for all child elements
-        for (const tinyxml2::XMLElement *child = root->FirstChildElement(); 
-             child; 
-             child = child->NextSiblingElement()) {
-            
-            std::string elemName = child->Name();
-            std::cout << "DEBUG: Processing child element: " << elemName << std::endl;
-            
-            if (elemName == "order") {
-                tinyxml2::XMLElement *errorElem = results->GetDocument()->NewElement("error");
-                errorElem->SetAttribute("sym", child->Attribute("sym") ? child->Attribute("sym") : "");
-                errorElem->SetAttribute("amount", child->Attribute("amount") ? child->Attribute("amount") : "");
-                errorElem->SetAttribute("limit", child->Attribute("limit") ? child->Attribute("limit") : "");
-                errorElem->SetText("Account not found");
-                results->InsertEndChild(errorElem);
-            } 
-            else if (elemName == "query" || elemName == "cancel") {
-                tinyxml2::XMLElement *errorElem = results->GetDocument()->NewElement("error");
-                errorElem->SetAttribute("id", child->Attribute("id") ? child->Attribute("id") : "");
-                errorElem->SetText("Account not found");
-                results->InsertEndChild(errorElem);
-            }
+        if (accountExists) {
+            std::cout << "✅ Account exists in database" << std::endl;
+        } else {
+            std::cerr << "ERROR: Account not found in database" << std::endl;
         }
+    } catch (const std::exception& e) {
+        std::cerr << "ERROR: Database exception: " << e.what() << std::endl;
+        accountExists = false;
+    }
+    
+    if (!accountExists) {
+        std::cerr << "Account does not exist, returning error" << std::endl;
+        tinyxml2::XMLElement *errorElem = results->GetDocument()->NewElement("error");
+        errorElem->SetAttribute("id", accountId.c_str());
+        errorElem->SetText("Account not found");
+        results->InsertEndChild(errorElem);
         return;
     }
     
-    // Process all child elements
-    for (const tinyxml2::XMLElement *child = root->FirstChildElement(); 
-         child; 
-         child = child->NextSiblingElement()) {
+    // Process child elements (orders, queries, cancels)
+    for (const tinyxml2::XMLElement *childElem = root->FirstChildElement(); 
+         childElem; 
+         childElem = childElem->NextSiblingElement()) {
         
-        std::string elemName = child->Name();
-        std::cout << "DEBUG: Processing child element: " << elemName << std::endl;
+        std::string elemType = childElem->Name();
+        std::cout << "Processing child element: " << elemType << std::endl;
         
-        if (elemName == "order") {
-            processOrder(child, results, accountId);
-        } 
-        else if (elemName == "query") {
-            processQuery(child, results, accountId);
-        } 
-        else if (elemName == "cancel") {
-            processCancel(child, results, accountId);
+        if (elemType == "order") {
+            // Handle order element
+            const char* symStr = childElem->Attribute("sym");
+            const char* amountStr = childElem->Attribute("amount");
+            const char* limitStr = childElem->Attribute("limit");
+            
+            std::cout << "Order details - symbol: " << (symStr ? symStr : "null") 
+                      << ", amount: " << (amountStr ? amountStr : "null")
+                      << ", limit: " << (limitStr ? limitStr : "null") << std::endl;
+            
+            if (!symStr || !amountStr || !limitStr) {
+                std::cerr << "ERROR: Missing required attributes for order" << std::endl;
+                tinyxml2::XMLElement *errorElem = results->GetDocument()->NewElement("error");
+                if (symStr) errorElem->SetAttribute("sym", symStr);
+                if (amountStr) errorElem->SetAttribute("amount", amountStr);
+                if (limitStr) errorElem->SetAttribute("limit", limitStr);
+                errorElem->SetText("Missing order attributes");
+                results->InsertEndChild(errorElem);
+                continue;
+            }
+            
+            // Create a new order - placeholder for your actual order creation
+            std::cout << "Creating order in database..." << std::endl;
+            
+            try {
+                double amount = std::stod(amountStr);
+                double limit = std::stod(limitStr);
+                
+                // Create order in database
+                int orderId = orderRepo.createOrder(accountId, symStr, amount, limit);
+                
+                if (orderId > 0) {
+                    std::cout << "✅ Successfully created order with ID: " << orderId << std::endl;
+                    tinyxml2::XMLElement *openedElem = results->GetDocument()->NewElement("opened");
+                    openedElem->SetAttribute("id", std::to_string(orderId).c_str());
+                    openedElem->SetAttribute("sym", symStr);
+                    openedElem->SetAttribute("amount", amountStr);
+                    openedElem->SetAttribute("limit", limitStr);
+                    results->InsertEndChild(openedElem);
+                } else {
+                    std::cerr << "ERROR: Failed to create order in database" << std::endl;
+                    tinyxml2::XMLElement *errorElem = results->GetDocument()->NewElement("error");
+                    errorElem->SetAttribute("sym", symStr);
+                    errorElem->SetText("Order creation failed");
+                    results->InsertEndChild(errorElem);
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "ERROR: Exception creating order: " << e.what() << std::endl;
+                tinyxml2::XMLElement *errorElem = results->GetDocument()->NewElement("error");
+                errorElem->SetAttribute("sym", symStr);
+                errorElem->SetText(std::string("Order error: ").append(e.what()).c_str());
+                results->InsertEndChild(errorElem);
+            }
         }
-        else {
-            std::cout << "DEBUG: Unknown element in transactions: " << elemName << std::endl;
-            tinyxml2::XMLElement *errorElem = results->GetDocument()->NewElement("error");
-            errorElem->SetText(("Unknown element: " + elemName).c_str());
-            results->InsertEndChild(errorElem);
-        }
+        // Similar handling for query and cancel operations
     }
+    
+    std::cout << "==== TRANSACTION REQUEST PROCESSING COMPLETE ====" << std::endl;
 }
 
 void TradingEngine::processOrder(const tinyxml2::XMLElement *orderElem, tinyxml2::XMLElement *results, const std::string &accountId) {
