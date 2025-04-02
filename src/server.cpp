@@ -23,7 +23,7 @@ Server::Server(int port, TradingEngine& tradingEngine, size_t numThreads)
     try {
         // Register signal handler
         std::cout << "Setting up signal handler..." << std::endl;
-        signal(SIGINT, signalHandler);
+        setUpSignalHandler();
         std::cout << "Signal handler set" << std::endl;
         
         // Initialize server socket
@@ -242,7 +242,29 @@ void Server::run() {
     socklen_t clientAddrSize = sizeof(clientAddr);
     
     std::cout << "Server listening on port " << port << " with file descriptor " << serverFd << std::endl;
-    // Rest of the method remains the same
+    
+    // Add the missing accept loop
+    while (running) {
+        std::cout << "Waiting for connection..." << std::endl;
+        int clientFd = acceptconnection(clientAddr, clientAddrSize);
+        
+        if (clientFd < 0) {
+            std::cerr << "Failed to accept connection, waiting before retry..." << std::endl;
+            sleep(1); // Wait a moment before retrying
+            continue;
+        }
+        
+        char clientIP[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &clientAddr.sin_addr, clientIP, INET_ADDRSTRLEN);
+        std::cout << "Accepted connection from " << clientIP << ":" << ntohs(clientAddr.sin_port) << std::endl;
+        
+        // Use thread pool to handle client
+        threadPool.submit([this, clientFd]() {
+            this->handleClient(clientFd, this->tradingEngine);
+        });
+    }
+    
+    std::cout << "Server shutting down gracefully" << std::endl;
 }
 
 
