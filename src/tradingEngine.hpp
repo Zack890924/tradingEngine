@@ -69,6 +69,11 @@ public:
                           
     // Process XML requests
     std::string processRequest(const std::string &xmlStr);
+
+    // Additional XML processing methods
+    void processOrder(const tinyxml2::XMLElement *orderElem, tinyxml2::XMLElement *results, const std::string &accountId);
+    void processQuery(const tinyxml2::XMLElement *queryElem, tinyxml2::XMLElement *results, const std::string &accountId);
+    void processCancel(const tinyxml2::XMLElement *cancelElem, tinyxml2::XMLElement *results, const std::string &accountId);
 };
 
 #endif
