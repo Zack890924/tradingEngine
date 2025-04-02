@@ -199,32 +199,46 @@ void Server::signalHandler(int signum) {
 
 
 void Server::handleClient(int clientFd, TradingEngine &tradingEngine){
+    std::cout << "==== DEBUG: Handling Client Connection ====" << std::endl;
+    std::cout << "Client socket FD: " << clientFd << std::endl;
 
     std::string xmlStr;
     if(!readLenAndXML(clientFd, xmlStr)) {
         // read fails
-        std::cerr << "Failed to read XML from client or client disconnected" << std::endl;
-        closeServer(clientFd);
-        return;
-    }
-    std::string respXML = tradingEngine.processRequest(xmlStr);
-
-    uint32_t length = respXML.size();
-    uint32_t netLen = htonl(length);
-    ssize_t w1 = write(clientFd, &netLen, sizeof(netLen));
-    if(w1 < 0){
-        std::cerr << "Failed to write response length" << std::endl;
-        closeServer(clientFd);
-        return;
-    }
-    ssize_t w2 = write(clientFd, respXML.c_str(), length);
-    if(w2 < 0){
-        std::cerr << "Failed to write response content" << std::endl;
+        std::cerr << "DEBUG: Failed to read XML from client or client disconnected" << std::endl;
         closeServer(clientFd);
         return;
     }
     
+    std::cout << "DEBUG: Successfully read XML from client, size: " << xmlStr.size() << std::endl;
+    std::cout << "DEBUG: First 100 chars of XML: " << xmlStr.substr(0, std::min(xmlStr.size(), size_t(100))) << std::endl;
+    
+    std::string respXML = tradingEngine.processRequest(xmlStr);
+    std::cout << "DEBUG: Received response from trading engine, size: " << respXML.size() << std::endl;
+    std::cout << "DEBUG: First 100 chars of response: " << respXML.substr(0, std::min(respXML.size(), size_t(100))) << std::endl;
+
+    uint32_t length = respXML.size();
+    uint32_t netLen = htonl(length);
+    std::cout << "DEBUG: Writing response length: " << length << " bytes" << std::endl;
+    
+    ssize_t w1 = write(clientFd, &netLen, sizeof(netLen));
+    if(w1 < 0){
+        std::cerr << "DEBUG: Failed to write response length, error: " << strerror(errno) << std::endl;
+        closeServer(clientFd);
+        return;
+    }
+    
+    std::cout << "DEBUG: Writing response content..." << std::endl;
+    ssize_t w2 = write(clientFd, respXML.c_str(), length);
+    if(w2 < 0){
+        std::cerr << "DEBUG: Failed to write response content, error: " << strerror(errno) << std::endl;
+        closeServer(clientFd);
+        return;
+    }
+    
+    std::cout << "DEBUG: Successfully wrote response, closing connection" << std::endl;
     closeServer(clientFd);
+    std::cout << "==== DEBUG: Client Handler Complete ====" << std::endl;
 }
 
 
