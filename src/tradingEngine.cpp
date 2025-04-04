@@ -187,7 +187,8 @@ int TradingEngine::placeOrder(const std::string &accountId, const std::string &s
     std::cout << "Account: " << accountId << ", Symbol: " << symbol << ", Amount: " << amount << ", Limit: " << limitPrice << std::endl;
     try {
         if(!accountRepo.accountExists(accountId)) {
-            std::cerr << "ERROR: Account does not exist: " << accountId << std::endl;
+            // std::cerr << "ERROR: Account does not exist: " << accountId << std::endl;
+            logError("ERROR: Account does not exist: " + accountId);
             return -1;
         }
         if(amount > 0) {
@@ -195,11 +196,14 @@ int TradingEngine::placeOrder(const std::string &accountId, const std::string &s
             double balance = accountRepo.getBalance(accountId);
             std::cout << "Buy order - Cost: " << cost << ", Available balance: " << balance << std::endl;
             if(balance < cost) {
-                std::cerr << "ERROR: Insufficient balance for buy order" << std::endl;
+                // std::cerr << "ERROR: Insufficient balance for buy order" << std::endl;
+                logError("ERROR: Insufficient balance for buy order");
                 return -1;
+
             }
             if(!accountRepo.updateBalance(accountId, balance - cost)) {
-                std::cerr << "ERROR: Failed to update balance" << std::endl;
+                // std::cerr << "ERROR: Failed to update balance" << std::endl;
+                logError("ERROR: Failed to update balance");
                 return -1;
             }
             std::cout << "Successfully deducted " << cost << " from account balance" << std::endl;
@@ -208,17 +212,20 @@ int TradingEngine::placeOrder(const std::string &accountId, const std::string &s
             double shares = accountRepo.getPosition(accountId, symbol);
             std::cout << "Sell order - Required shares: " << std::abs(amount) << ", Available shares: " << shares << std::endl;
             if(shares < std::abs(amount)) {
-                std::cerr << "ERROR: Insufficient shares for sell order" << std::endl;
+                // std::cerr << "ERROR: Insufficient shares for sell order" << std::endl;
+                logError("ERROR: Insufficient shares for sell order");
                 return -1;
             }
             if(!accountRepo.updatePosition(accountId, symbol, shares - std::abs(amount))) {
-                std::cerr << "ERROR: Failed to update position" << std::endl;
+                // std::cerr << "ERROR: Failed to update position" << std::endl;
+                logError("ERROR: Failed to update position");
                 return -1;
             }
             std::cout << "Successfully deducted " << std::abs(amount) << " shares from account position" << std::endl;
         }
         else {
-            std::cerr << "ERROR: Order amount cannot be zero" << std::endl;
+            // std::cerr << "ERROR: Order amount cannot be zero" << std::endl;
+            logError("ERROR: Order amount cannot be zero");
             return -1;
         }
         int orderId = orderRepo.createOrder(accountId, symbol, amount, limitPrice);
@@ -227,11 +234,13 @@ int TradingEngine::placeOrder(const std::string &accountId, const std::string &s
             matchOrders(symbol);
         }
         else {
-            std::cerr << "ERROR: Failed to create order in database" << std::endl;
+            // std::cerr << "ERROR: Failed to create order in database" << std::endl;
+            logError("ERROR: Failed to create order in database");
         }
         return orderId;
     } catch(const std::exception &e) {
-        std::cerr << "ERROR: Exception in placeOrder: " << e.what() << std::endl;
+        // std::cerr << "ERROR: Exception in placeOrder: " << e.what() << std::endl;
+        logError("ERROR: Exception in placeOrder: " + std::string(e.what()));
         return -1;
     }
 }
@@ -285,7 +294,8 @@ bool TradingEngine::executeTransaction(const Order &buyOrder, const Order &sellO
     try {
         return true;
     } catch(const std::exception &e) {
-        std::cerr << "Error executing transaction: " << e.what() << std::endl;
+        // std::cerr << "Error executing transaction: " << e.what() << std::endl;
+        logError("Error executing transaction: " + std::string(e.what()));
         return false;
     }
 }
@@ -341,7 +351,8 @@ std::string TradingEngine::processRequest(const std::string &xmlStr) {
     XMLDocument doc;
     XMLError err = doc.Parse(xmlStr.c_str());
     if(err != XML_SUCCESS){
-        std::cerr << "ERROR: Failed to parse XML, error code: " << err << std::endl;
+        // std::cerr << "ERROR: Failed to parse XML, error code: " << err << std::endl;
+        logError("ERROR: Failed to parse XML, error code: " + std::to_string(err));
         return "<results><error>XML parsing failed</error></results>";
     }
     std::cout << "Successfully parsed XML" << std::endl;
@@ -350,7 +361,8 @@ std::string TradingEngine::processRequest(const std::string &xmlStr) {
     respDoc.InsertFirstChild(results);
     XMLElement *root = doc.RootElement();
     if(!root){
-        std::cerr << "ERROR: No root element found in XML" << std::endl;
+        // std::cerr << "ERROR: No root element found in XML" << std::endl;
+        logError("ERROR: No root element found in XML");
         return "<results><error>Missing root element</error></results>";
     }
     std::string rootName = root->Name();
@@ -364,7 +376,8 @@ std::string TradingEngine::processRequest(const std::string &xmlStr) {
         processTransaction(root, results);
     }
     else{
-        std::cerr << "ERROR: Unknown root element: " << rootName << std::endl;
+        // std::cerr << "ERROR: Unknown root element: " << rootName << std::endl;
+        logError("ERROR: Unknown root element: " + rootName);
         XMLElement *error = respDoc.NewElement("error");
         error->SetText("Unknown request type");
         results->InsertEndChild(error);
@@ -638,7 +651,8 @@ void TradingEngine::processTransaction(const XMLElement *root, XMLElement *resul
     std::cout << "==== PROCESSING TRANSACTION REQUEST ====" << std::endl;
     const char *accountIdStr = root->Attribute("id");
     if(!accountIdStr){
-        std::cerr << "ERROR: Missing account ID in transaction request" << std::endl;
+        // std::cerr << "ERROR: Missing account ID in transaction request" << std::endl;
+        logError("ERROR: Missing account ID in transaction request");
         XMLElement *errorElem = results->GetDocument()->NewElement("error");
         errorElem->SetText("Missing account ID");
         results->InsertEndChild(errorElem);
@@ -654,10 +668,12 @@ void TradingEngine::processTransaction(const XMLElement *root, XMLElement *resul
             std::cout << "Account exists in database" << std::endl;
         }
         else{
-            std::cerr << "ERROR: Account not found in database" << std::endl;
+            // std::cerr << "ERROR: Account not found in database" << std::endl;
+            logError("ERROR: Account not found in database");
         }
     } catch(const std::exception &e){
-        std::cerr << "ERROR: Database exception: " << e.what() << std::endl;
+        // std::cerr << "ERROR: Database exception: " << e.what() << std::endl;
+        logError("ERROR: Database exception: " + std::string(e.what()));
         accountExists = false;
     }
     if(!accountExists){
@@ -697,7 +713,8 @@ void TradingEngine::processOrder(const XMLElement *orderElem, XMLElement *result
               << ", limit: " << (limitStr ? limitStr : "null") << std::endl;
     
     if(!symStr || !amountStr || !limitStr){
-        std::cerr << "ERROR: Missing required attributes for order" << std::endl;
+        // std::cerr << "ERROR: Missing required attributes for order" << std::endl;
+        logError("ERROR: Missing required attributes for order");
         XMLElement *errorElem = results->GetDocument()->NewElement("error");
         if(symStr) errorElem->SetAttribute("sym", symStr);
         errorElem->SetText("Missing required order attributes");
@@ -714,7 +731,8 @@ void TradingEngine::processOrder(const XMLElement *orderElem, XMLElement *result
         
         std::cout << "Parsed values - amount: " << amount << ", limit: " << limitPrice << std::endl;
     } catch(const std::exception &e){
-        std::cerr << "ERROR: Invalid numeric format: " << e.what() << std::endl;
+        // std::cerr << "ERROR: Invalid numeric format: " << e.what() << std::endl;
+        logError("ERROR: Invalid numeric format: " + std::string(e.what()));
         XMLElement *errorElem = results->GetDocument()->NewElement("error");
         errorElem->SetAttribute("sym", symStr);
         errorElem->SetText("Invalid numeric format in order");
@@ -766,14 +784,16 @@ void TradingEngine::processOrder(const XMLElement *orderElem, XMLElement *result
                 errorMsg = "Order creation failed";
             }
             
-            std::cerr << "ERROR: " << errorMsg << std::endl;
+            // std::cerr << "ERROR: " << errorMsg << std::endl;
+            logError("ERROR: " + errorMsg);
             XMLElement *errorElem = results->GetDocument()->NewElement("error");
             errorElem->SetAttribute("sym", symStr);
             errorElem->SetText(errorMsg.c_str());
             results->InsertEndChild(errorElem);
         }
     } catch(const std::exception &e){
-        std::cerr << "ERROR: Exception placing order: " << e.what() << std::endl;
+        // std::cerr << "ERROR: Exception placing order: " << e.what() << std::endl;
+        logError("ERROR: Exception placing order: " + std::string(e.what()));
         XMLElement *errorElem = results->GetDocument()->NewElement("error");
         errorElem->SetAttribute("sym", symStr);
         errorElem->SetText(std::string("Order error: ").append(e.what()).c_str());
