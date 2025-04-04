@@ -4,6 +4,7 @@ import time
 import threading
 import argparse
 from queue import Queue
+import statistics
 
 def send_xml_request(xml_str):
     host = 'localhost'
@@ -11,6 +12,7 @@ def send_xml_request(xml_str):
     start = time.time()
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(5)  
             s.connect((host, port))
             xml_bytes = xml_str.encode('utf-8')
             s.sendall(struct.pack("!I", len(xml_bytes)) + xml_bytes)
@@ -61,7 +63,7 @@ def stress_test(num_requests, xml_str, num_threads):
 
     total_time = time.time() - start_time
     throughput = num_requests / total_time if total_time > 0 else 0
-    avg_latency = sum(latencies) / len(latencies) if latencies else 0
+    avg_latency = statistics.mean(latencies) if latencies else 0
     return total_time, throughput, avg_latency, results
 
 if __name__ == "__main__":
@@ -69,6 +71,7 @@ if __name__ == "__main__":
     parser.add_argument("--num", type=int, default=100, help="Number of total requests")
     parser.add_argument("--xml", type=str, default="order", choices=["order", "query", "cancel"], help="Type of XML request")
     parser.add_argument("--threads", type=int, default=4, help="Number of concurrent threads (≒ # of cores)")
+    parser.add_argument("--runs", type=int, default=10, help="Number of runs to average")
     args = parser.parse_args()
 
     xml_requests = {
@@ -80,12 +83,23 @@ if __name__ == "__main__":
     xml_str = xml_requests[args.xml]
     num_requests = args.num
     num_threads = args.threads
+    runs = args.runs
 
-    total_time, throughput, avg_latency, results = stress_test(num_requests, xml_str, num_threads)
+    all_throughputs = []
+    all_latencies = []
+    for i in range(runs):
+        print(f"--- Run {i+1} ---")
+        total_time, throughput, avg_latency, results = stress_test(num_requests, xml_str, num_threads)
+        print(f"Run {i+1}: Total Time: {total_time:.3f} sec, Throughput: {throughput:.2f} TPS, Average Latency: {avg_latency:.3f} sec/request")
+        all_throughputs.append(throughput)
+        all_latencies.append(avg_latency)
+        time.sleep(1)
 
-    print("\n===== Stress Test Results =====")
+    overall_throughput = sum(all_throughputs) / len(all_throughputs)
+    overall_latency = sum(all_latencies) / len(all_latencies)
+
+    print("\n===== Average Stress Test Results =====")
     print("Total Requests: {}".format(num_requests))
     print("Threads (≈ cores): {}".format(num_threads))
-    print("Total Time: {:.3f} seconds".format(total_time))
-    print("Throughput (TPS): {:.2f}".format(throughput))
-    print("Average Latency: {:.3f} seconds/request".format(avg_latency))
+    print("Average Throughput (TPS): {:.2f}".format(overall_throughput))
+    print("Average Latency: {:.3f} seconds/request".format(overall_latency))

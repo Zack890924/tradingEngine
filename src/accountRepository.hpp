@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <map>
 
 class AccountRepository {
 public:
@@ -15,6 +16,8 @@ public:
     bool addPosition(const std::string& accountId, const std::string& symbol, double amount);
     bool updatePosition(const std::string& accountId, const std::string& symbol, double amount);
     double getPosition(const std::string& accountId, const std::string& symbol);
+    bool executeSQL(const std::string& sql);
+    std::map<std::string, double> getAllPositions(const std::string& accountId);
 };
 
 #endif

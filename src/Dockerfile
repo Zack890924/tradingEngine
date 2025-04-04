@@ -26,4 +26,6 @@ RUN cmake .. && make
 
 EXPOSE 12345
 
-CMD ["/bin/bash", "-c", "/app/check-port.sh && ./exchange_server"]
+# CMD ["/bin/bash", "-c", "/app/check-port.sh && ./exchange_server"]
+CMD ["./exchange_server"]
+

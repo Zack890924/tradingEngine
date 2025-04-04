@@ -132,7 +132,7 @@ void Order::addExecution(int qty, const Record &record){
         throw std::runtime_error("Cannot fill more than the order quantity");
     }
 
-    filled += qty;
+    // filled += qty;
     records.push_back(record);
 }
 
