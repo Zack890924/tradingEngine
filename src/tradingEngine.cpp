@@ -8,18 +8,77 @@
 #include <cstring>
 #include "tinyxml2.h"
 
+#ifdef __linux__
+#include <pthread.h>
+#endif
+
 using namespace tinyxml2;
 
+std::queue<std::string> TradingEngine::logQueue;
+std::mutex TradingEngine::logQueueMtx;
+std::condition_variable TradingEngine::logCV;
+bool TradingEngine::stopLogging = false;
+std::thread TradingEngine::logThread;
+
+void TradingEngine::loggingThreadFunc() {
+    while(true) {
+        std::unique_lock<std::mutex> lk(logQueueMtx);
+        logCV.wait(lk, []{ return !logQueue.empty() || stopLogging; });
+        if(stopLogging && logQueue.empty()) {
+            break;
+        }
+        while(!logQueue.empty()) {
+            std::string msg = logQueue.front();
+            logQueue.pop();
+            lk.unlock();
+            std::cerr << msg << std::endl;
+            lk.lock();
+        }
+    }
+}
+
+void TradingEngine::asyncLog(const std::string &msg) {
+    {
+        std::lock_guard<std::mutex> lk(logQueueMtx);
+        logQueue.push(msg);
+    }
+    logCV.notify_one();
+}
+
+void TradingEngine::pinToCore(int coreId) {
+#ifdef __linux__
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(coreId, &cpuset);
+    pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+#endif
+}
+
 TradingEngine::TradingEngine() : orderCounter(1) {
-    // Initialize any database-specific setup if needed
+    pinToCore(0);
+    if(!logThread.joinable()) {
+        stopLogging = false;
+        logThread = std::thread(&TradingEngine::loggingThreadFunc);
+    }
 }
 
-void TradingEngine::logError(const std::string &message) {
-    std::cerr << "[Error] " << message << std::endl;
+TradingEngine::~TradingEngine() {
+    {
+        std::lock_guard<std::mutex> lk(logQueueMtx);
+        stopLogging = true;
+    }
+    logCV.notify_one();
+    if(logThread.joinable()) {
+        logThread.join();
+    }
 }
 
-bool TradingEngine::createAccount(const std::string &account_id, double balance, std::string &msg) {
-    std::lock_guard<std::mutex> lock(accountsMtx);
+void TradingEngine::logError(const std::string &message){
+    asyncLog("[Error] " + message);
+}
+
+bool TradingEngine::createAccount(const std::string &account_id, double balance, std::string &msg){
+    std::unique_lock<std::shared_mutex> lock(accountsMtx);
     auto it = accounts.find(account_id);
     if(it != accounts.end()){
         msg = "Account already exists";
@@ -27,15 +86,18 @@ bool TradingEngine::createAccount(const std::string &account_id, double balance,
     }
     accounts.try_emplace(account_id, account_id, balance);
     msg = "Account created";
-    
-    // Also use the database
     accountRepo.createAccount(account_id, balance);
-    
+    std::cout << "[DEBUG] Accounts currently in map: ";
+    for (const auto &pair : accounts) {
+        std::cout << pair.first << " ";
+    }
+    std::cout << std::endl;
+
     return true;
 }
 
-bool TradingEngine::createSymbol(const std::string &account_id, const std::string &symbol, double shares, std::string &msg) {
-    std::lock_guard<std::mutex> lock(accountsMtx);
+bool TradingEngine::createSymbol(const std::string &account_id, const std::string &symbol, double shares, std::string &msg){
+    std::unique_lock<std::shared_mutex> lock(accountsMtx);
     auto accIt = accounts.find(account_id);
     if(accIt == accounts.end()){
         msg = "Account does not exist";
@@ -44,28 +106,26 @@ bool TradingEngine::createSymbol(const std::string &account_id, const std::strin
     Account &acc = accIt->second;
     acc.addPosition(symbol, shares);
     msg = "Symbol created";
-    
-    // Also use the database
     accountRepo.addPosition(account_id, symbol, shares);
-    
     return true;
 }
 
-bool TradingEngine::addSymbolToAccount(const std::string& symbol, const std::string& accountId, double amount) {
+bool TradingEngine::addSymbolToAccount(const std::string& symbol, const std::string& accountId, double amount){
     return accountRepo.addPosition(accountId, symbol, amount);
 }
 
-OrderBook &TradingEngine::getOrCreateOrderBook(const std::string &symbol) {
-    std::lock_guard<std::mutex> lock(orderBooksMtx);
+OrderBook &TradingEngine::getOrCreateOrderBook(const std::string &symbol){
+    std::unique_lock<std::shared_mutex> lock(orderBooksMtx);
     auto it = orderBooks.find(symbol);
     if(it == orderBooks.end()){
         orderBooks.try_emplace(symbol);
     }
+    
     return orderBooks[symbol];
 }
 
-OrderBook *TradingEngine::getOrderBookIfExist(const std::string &symbol) {
-    std::lock_guard<std::mutex> lock(orderBooksMtx);
+OrderBook *TradingEngine::getOrderBookIfExist(const std::string &symbol){
+    std::shared_lock<std::shared_mutex> lock(orderBooksMtx);
     auto it = orderBooks.find(symbol);
     if(it != orderBooks.end()){
         return &(it->second);
@@ -73,42 +133,58 @@ OrderBook *TradingEngine::getOrderBookIfExist(const std::string &symbol) {
     return nullptr;
 }
 
-void TradingEngine::matchOrders(const std::string &symbol) {
-    OrderBook &book = getOrCreateOrderBook(symbol);
+void TradingEngine::matchOrders(const std::string &symbol){
+    std::cout << "[DEBUG] Enter matchOrders for symbol=" << symbol << std::endl;
+
+    auto buyOrders = orderRepo.getOpenBuyOrders(symbol);
+    auto sellOrders = orderRepo.getOpenSellOrders(symbol);
+
+ 
+
+    while (!buyOrders.empty() && !sellOrders.empty()) {
+        auto buyOrder = buyOrders.front();
+        auto sellOrder = sellOrders.front();
+
     
-    while(true) {
-        if(book.getBuyOrders().empty() || book.getSellOrders().empty()){
+        if (buyOrder->getLimitPrice() < sellOrder->getLimitPrice()) {
+            std::cout << "[DEBUG] buyPrice < sellPrice => break." << std::endl;
             break;
         }
-        std::shared_ptr<Order> buyOrder = book.getBuyOrders().front();
-        std::shared_ptr<Order> sellOrder = book.getSellOrders().front();
-        if(buyOrder->getLimitPrice() < sellOrder->getLimitPrice()){
+
+        int qty = std::min((int)std::abs(buyOrder->getOpenAmount()), (int)std::abs(sellOrder->getOpenAmount()));
+        // std::cout << "[DEBUG] qty=" << qty << std::endl;
+        if (qty <= 0) {
+            std::cout << "[DEBUG] qty=0 => break." << std::endl;
             break;
         }
-        int tradeQty = std::min(buyOrder->getOpenQuantity(), sellOrder->getOpenQuantity());
-        double tradePrice = (buyOrder->getTimestamp() < sellOrder->getTimestamp()) ?
-                            buyOrder->getLimitPrice() : sellOrder->getLimitPrice();
+
+        double price = (buyOrder->getTimestamp() < sellOrder->getTimestamp()) ? buyOrder->getLimitPrice() : sellOrder->getLimitPrice();
+
+        
         try {
-            trade(buyOrder, sellOrder, tradeQty, tradePrice);
-            if(buyOrder->getOrderId() > 0 && sellOrder->getOrderId() > 0) {
-                executeTransaction(*buyOrder, *sellOrder, tradeQty, tradePrice);
+            if (executeTransaction(*buyOrder, *sellOrder, qty, price)) {
+                trade(buyOrder, sellOrder, qty, price);
             }
-        }
-        catch(const std::exception &e) {
-            logError("Trade failed :" + std::string(e.what()));
+        } catch (const std::exception &e) {
             break;
         }
-        book.updateOrRemoveOrder(buyOrder);
-        book.updateOrRemoveOrder(sellOrder);
+
+        if (std::abs(buyOrder->getOpenAmount()) < 1e-12) {
+            buyOrders.erase(buyOrders.begin());
+        }
+        if (!sellOrders.empty() && std::abs(sellOrder->getOpenAmount()) < 1e-12) {
+            sellOrders.erase(sellOrders.begin());
+        }
+
     }
+
+    // std::cout << "[DEBUG] matchOrders done." << std::endl;
 }
 
-int TradingEngine::placeOrder(const std::string &accountId, const std::string &symbol, 
-                                double amount, double limitPrice) {
-    std::cout << "==== PLACING ORDER ====" << std::endl;
-    std::cout << "Account: " << accountId << ", Symbol: " << symbol 
-              << ", Amount: " << amount << ", Limit: " << limitPrice << std::endl;
-    
+
+int TradingEngine::placeOrder(const std::string &accountId, const std::string &symbol, double amount, double limitPrice){
+    // std::cout << "==== PLACING ORDER ====" << std::endl;
+    std::cout << "Account: " << accountId << ", Symbol: " << symbol << ", Amount: " << amount << ", Limit: " << limitPrice << std::endl;
     try {
         if(!accountRepo.accountExists(accountId)) {
             std::cerr << "ERROR: Account does not exist: " << accountId << std::endl;
@@ -126,12 +202,11 @@ int TradingEngine::placeOrder(const std::string &accountId, const std::string &s
                 std::cerr << "ERROR: Failed to update balance" << std::endl;
                 return -1;
             }
-            std::cout << "✅ Successfully deducted " << cost << " from account balance" << std::endl;
+            std::cout << "Successfully deducted " << cost << " from account balance" << std::endl;
         }
         else if(amount < 0) {
             double shares = accountRepo.getPosition(accountId, symbol);
-            std::cout << "Sell order - Required shares: " << std::abs(amount) 
-                      << ", Available shares: " << shares << std::endl;
+            std::cout << "Sell order - Required shares: " << std::abs(amount) << ", Available shares: " << shares << std::endl;
             if(shares < std::abs(amount)) {
                 std::cerr << "ERROR: Insufficient shares for sell order" << std::endl;
                 return -1;
@@ -146,48 +221,68 @@ int TradingEngine::placeOrder(const std::string &accountId, const std::string &s
             std::cerr << "ERROR: Order amount cannot be zero" << std::endl;
             return -1;
         }
-        
         int orderId = orderRepo.createOrder(accountId, symbol, amount, limitPrice);
         if(orderId > 0) {
             std::cout << "Successfully created order with ID: " << orderId << std::endl;
+            matchOrders(symbol);
         }
         else {
             std::cerr << "ERROR: Failed to create order in database" << std::endl;
         }
         return orderId;
-        
     } catch(const std::exception &e) {
         std::cerr << "ERROR: Exception in placeOrder: " << e.what() << std::endl;
         return -1;
     }
 }
 
-void TradingEngine::trade(std::shared_ptr<Order> buyOrder, std::shared_ptr<Order> sellOrder, int qty, double tradePrice) {
-    std::lock_guard<std::mutex> lock(accountsMtx);
-    auto buyerIt = accounts.find(buyOrder->getAccountId());
-    auto sellerIt = accounts.find(sellOrder->getAccountId());
-    if(buyerIt == accounts.end() || sellerIt == accounts.end()){
-        throw std::runtime_error("Account not found");
-    }
-    Account &buyer = buyerIt->second;
-    Account &seller = sellerIt->second;
+void TradingEngine::trade(std::shared_ptr<Order> buyOrder, std::shared_ptr<Order> sellOrder, int qty, double tradePrice){
+    
+
+    std::string buyerId = buyOrder->getAccountId();
+    std::string sellerId = sellOrder->getAccountId();
+    std::string symbol = buyOrder->getSymbol();  
+
     long t = time(nullptr);
     Record rec(qty, tradePrice, t);
     buyOrder->addExecution(qty, rec);
     sellOrder->addExecution(qty, rec);
+
+    
     double cost = qty * tradePrice;
-    buyer.deductFrozenFunds(cost);
-    seller.deductFrozenPosition(sellOrder->getSymbol(), qty);
-    buyer.addPosition(buyOrder->getSymbol(), qty);
-    seller.addBalance(cost);
+
+    double buyerBalance = accountRepo.getBalance(buyerId);
+    accountRepo.updateBalance(buyerId, buyerBalance - cost);
+
+    double sellerBalance = accountRepo.getBalance(sellerId);
+    accountRepo.updateBalance(sellerId, sellerBalance + cost);
+
+    double buyerPos = accountRepo.getPosition(buyerId, symbol);
+    accountRepo.updatePosition(buyerId, symbol, buyerPos + qty);
+
+  
     buyOrder->reduceOpenQty(qty);
     sellOrder->reduceOpenQty(qty);
-}
 
-bool TradingEngine::executeTransaction(const Order &buyOrder, const Order &sellOrder, 
-                                         double amount, double price) {
+    orderRepo.recordExecution(buyOrder->getOrderId(), sellOrder->getOrderId(), symbol, qty, tradePrice);
+
+    double newBuyOpen = buyOrder->getOpenAmount();
+    double newSellOpen = sellOrder->getOpenAmount();
+
+    orderRepo.updateOrderStatus(buyOrder->getOrderId(),
+            newBuyOpen == 0 ? OrderStatus::EXECUTED : OrderStatus::OPEN,
+            newBuyOpen);
+    orderRepo.updateOrderStatus(sellOrder->getOrderId(),
+            newSellOpen == 0 ? OrderStatus::EXECUTED : OrderStatus::OPEN,
+            newSellOpen);
+
+   
+    }
+
+
+
+bool TradingEngine::executeTransaction(const Order &buyOrder, const Order &sellOrder, double amount, double price) {
     try {
-        // Implement database-backed transaction
         return true;
     } catch(const std::exception &e) {
         std::cerr << "Error executing transaction: " << e.what() << std::endl;
@@ -202,14 +297,12 @@ bool TradingEngine::cancelOrder(int orderId) {
     }
     bool canceled = orderRepo.cancelOrder(orderId);
     if(canceled) {
-        // If it was a buy order, refund the money
         if(order->getAmount() > 0) {
             double refundAmount = order->getOpenAmount() * order->getLimitPrice();
             double currentBalance = accountRepo.getBalance(order->getAccountId());
             accountRepo.updateBalance(order->getAccountId(), currentBalance + refundAmount);
         }
         else {
-            // If it was a sell order, return the shares
             double returnShares = std::abs(order->getOpenAmount());
             double currentShares = accountRepo.getPosition(order->getAccountId(), order->getSymbol());
             accountRepo.updatePosition(order->getAccountId(), order->getSymbol(), currentShares + returnShares);
@@ -221,9 +314,7 @@ bool TradingEngine::cancelOrder(int orderId) {
 bool TradingEngine::queryOrder(int order_id, std::string &XML_info) {
     auto order = orderRepo.getOrder(order_id);
     if(!order){
-        XML_info = "<status id=\"" + std::to_string(order_id) + "\">";
-        XML_info += "<error>Order not found</error>";
-        XML_info += "</status>";
+        XML_info = "<status id=\"" + std::to_string(order_id) + "\"><error>Order not found</error></status>";
         return false;
     }
     XML_info = "<status id=\"" + std::to_string(order_id) + "\">";
@@ -247,29 +338,23 @@ bool TradingEngine::queryOrder(int order_id, std::string &XML_info) {
 std::string TradingEngine::processRequest(const std::string &xmlStr) {
     std::cout << "\n======== TRADING ENGINE REQUEST PROCESSING ========" << std::endl;
     std::cout << "Received XML request: " << xmlStr << std::endl;
-    
     XMLDocument doc;
     XMLError err = doc.Parse(xmlStr.c_str());
     if(err != XML_SUCCESS){
         std::cerr << "ERROR: Failed to parse XML, error code: " << err << std::endl;
         return "<results><error>XML parsing failed</error></results>";
     }
-    
     std::cout << "Successfully parsed XML" << std::endl;
-    
     XMLDocument respDoc;
     XMLElement *results = respDoc.NewElement("results");
     respDoc.InsertFirstChild(results);
-    
     XMLElement *root = doc.RootElement();
     if(!root){
         std::cerr << "ERROR: No root element found in XML" << std::endl;
         return "<results><error>Missing root element</error></results>";
     }
-    
     std::string rootName = root->Name();
     std::cout << "Root element name: " << rootName << std::endl;
-    
     if(rootName == "create"){
         std::cout << "Processing CREATE request..." << std::endl;
         processCreate(root, results, &respDoc);
@@ -284,108 +369,76 @@ std::string TradingEngine::processRequest(const std::string &xmlStr) {
         error->SetText("Unknown request type");
         results->InsertEndChild(error);
     }
-    
     XMLPrinter printer;
     respDoc.Print(&printer);
     std::string response = printer.CStr();
-    
     std::cout << "Generated response: " << response << std::endl;
     std::cout << "======== TRADING ENGINE PROCESSING COMPLETE ========\n" << std::endl;
-    
     return response;
 }
 
 void TradingEngine::processCreate(const XMLElement *root, XMLElement *results, XMLDocument *respDoc) {
     std::cout << "==== PROCESSING CREATE REQUEST ====" << std::endl;
-    
-    for(const XMLElement *accountElem = root->FirstChildElement("account"); 
-        accountElem; 
-        accountElem = accountElem->NextSiblingElement("account")){
-        
+    for(const XMLElement *accountElem = root->FirstChildElement("account"); accountElem; accountElem = accountElem->NextSiblingElement("account")){
         const char *idStr = accountElem->Attribute("id");
         const char *balanceStr = accountElem->Attribute("balance");
-        
-        std::cout << "Processing account element - id: " << (idStr ? idStr : "null") 
-                  << ", balance: " << (balanceStr ? balanceStr : "null") << std::endl;
-        
+        std::cout << "Processing account element - id: " << (idStr ? idStr : "null") << ", balance: " << (balanceStr ? balanceStr : "null") << std::endl;
         if(!idStr || !balanceStr){
-            std::cerr << "ERROR: Missing required attributes for account" << std::endl;
             XMLElement *errorElem = respDoc->NewElement("error");
             if(idStr) errorElem->SetAttribute("id", idStr);
             errorElem->SetText("Missing account attributes");
             results->InsertEndChild(errorElem);
             continue;
         }
-        
         std::string accountId = idStr;
         double balance = 0.0;
-        
         try {
             balance = std::stod(balanceStr);
         } catch(const std::exception &e){
-            std::cerr << "ERROR: Invalid balance format: " << e.what() << std::endl;
             XMLElement *errorElem = respDoc->NewElement("error");
             errorElem->SetAttribute("id", accountId.c_str());
             errorElem->SetText("Invalid balance format");
             results->InsertEndChild(errorElem);
             continue;
         }
-        
         std::cout << "Creating account in database: " << accountId << " with balance: " << balance << std::endl;
-        
         try {
             bool success = accountRepo.createAccount(accountId, balance);
-            
+            std::string msg;
+            bool successs = createAccount(accountId, balance, msg);
             if(success){
-                std::cout << "Successfully created account in database" << std::endl;
                 XMLElement *createdElem = respDoc->NewElement("created");
                 createdElem->SetAttribute("id", accountId.c_str());
                 results->InsertEndChild(createdElem);
             }
             else{
-                std::cerr << "ERROR: Failed to create account in database (already exists)" << std::endl;
                 XMLElement *errorElem = respDoc->NewElement("error");
                 errorElem->SetAttribute("id", accountId.c_str());
                 errorElem->SetText("Account already exists");
                 results->InsertEndChild(errorElem);
             }
         } catch(const std::exception &e){
-            std::cerr << "ERROR: Database exception: " << e.what() << std::endl;
             XMLElement *errorElem = respDoc->NewElement("error");
             errorElem->SetAttribute("id", accountId.c_str());
             errorElem->SetText(std::string("Database error: ").append(e.what()).c_str());
             results->InsertEndChild(errorElem);
         }
     }
-    
-    for(const XMLElement *symbolElem = root->FirstChildElement("symbol"); 
-        symbolElem; 
-        symbolElem = symbolElem->NextSiblingElement("symbol")){
-        
+    for(const XMLElement *symbolElem = root->FirstChildElement("symbol"); symbolElem; symbolElem = symbolElem->NextSiblingElement("symbol")){
         const char *symStr = symbolElem->Attribute("sym");
         if(!symStr){
-            std::cerr << "ERROR: Missing sym attribute for symbol" << std::endl;
             XMLElement *errorElem = respDoc->NewElement("error");
             errorElem->SetText("Missing sym attribute");
             results->InsertEndChild(errorElem);
             continue;
         }
-        
         std::string symbol = symStr;
         std::cout << "Processing symbol: " << symbol << std::endl;
-        
-        for(const XMLElement *accountElem = symbolElem->FirstChildElement("account"); 
-            accountElem; 
-            accountElem = accountElem->NextSiblingElement("account")){
-            
+        for(const XMLElement *accountElem = symbolElem->FirstChildElement("account"); accountElem; accountElem = accountElem->NextSiblingElement("account")){
             const char *idStr = accountElem->Attribute("id");
             const char *sharesText = accountElem->GetText();
-            
-            std::cout << "Adding symbol to account - id: " << (idStr ? idStr : "null") 
-                      << ", shares: " << (sharesText ? sharesText : "null") << std::endl;
-            
+            std::cout << "Adding symbol to account - id: " << (idStr ? idStr : "null") << ", shares: " << (sharesText ? sharesText : "null") << std::endl;
             if(!idStr || !sharesText){
-                std::cerr << "ERROR: Missing id or shares for symbol position" << std::endl;
                 XMLElement *errorElem = respDoc->NewElement("error");
                 errorElem->SetAttribute("sym", symbol.c_str());
                 if(idStr) errorElem->SetAttribute("id", idStr);
@@ -393,12 +446,10 @@ void TradingEngine::processCreate(const XMLElement *root, XMLElement *results, X
                 results->InsertEndChild(errorElem);
                 continue;
             }
-            
             double shares = 0.0;
             try {
                 shares = std::stod(sharesText);
             } catch(const std::exception &e){
-                std::cerr << "ERROR: Invalid shares format: " << e.what() << std::endl;
                 XMLElement *errorElem = respDoc->NewElement("error");
                 errorElem->SetAttribute("sym", symbol.c_str());
                 errorElem->SetAttribute("id", idStr);
@@ -406,21 +457,16 @@ void TradingEngine::processCreate(const XMLElement *root, XMLElement *results, X
                 results->InsertEndChild(errorElem);
                 continue;
             }
-            
             bool success = false;
             try {
                 success = addSymbolToAccount(symbol, idStr, shares);
-                
                 if(success){
-                    std::cout << "Successfully added " << shares << " shares of " << symbol 
-                              << " to account " << idStr << std::endl;
                     XMLElement *createdElem = respDoc->NewElement("created");
                     createdElem->SetAttribute("sym", symbol.c_str());
                     createdElem->SetAttribute("id", idStr);
                     results->InsertEndChild(createdElem);
                 }
                 else{
-                    std::cerr << "ERROR: Failed to add symbol to account" << std::endl;
                     XMLElement *errorElem = respDoc->NewElement("error");
                     errorElem->SetAttribute("sym", symbol.c_str());
                     errorElem->SetAttribute("id", idStr);
@@ -428,7 +474,6 @@ void TradingEngine::processCreate(const XMLElement *root, XMLElement *results, X
                     results->InsertEndChild(errorElem);
                 }
             } catch(const std::exception &e){
-                std::cerr << "ERROR: Exception adding symbol to account: " << e.what() << std::endl;
                 XMLElement *errorElem = respDoc->NewElement("error");
                 errorElem->SetAttribute("sym", symbol.c_str());
                 errorElem->SetAttribute("id", idStr);
@@ -437,7 +482,6 @@ void TradingEngine::processCreate(const XMLElement *root, XMLElement *results, X
             }
         }
     }
-    
     std::cout << "==== CREATE REQUEST PROCESSING COMPLETE ====" << std::endl;
 }
 
@@ -481,57 +525,46 @@ XMLElement* TradingEngine::buildOrderElement(XMLDocument *doc, std::shared_ptr<O
 
 void TradingEngine::processQuery(const XMLElement *queryElem, XMLElement *results, const std::string &accountId) {
     std::cout << "==== PROCESSING QUERY ====" << std::endl;
-    
     const char *idStr = queryElem->Attribute("id");
     if(!idStr){
-        std::cerr << "ERROR: Missing id attribute in query" << std::endl;
         XMLElement *errorElem = results->GetDocument()->NewElement("error");
         errorElem->SetText("Missing order id in query");
         results->InsertEndChild(errorElem);
         return;
     }
-    
     int orderId = 0;
     try {
         orderId = std::stoi(idStr);
         std::cout << "Querying order ID: " << orderId << std::endl;
     } catch(const std::exception &e){
-        std::cerr << "ERROR: Invalid order ID format: " << e.what() << std::endl;
         XMLElement *errorElem = results->GetDocument()->NewElement("error");
         errorElem->SetAttribute("id", idStr);
         errorElem->SetText("Invalid order ID format");
         results->InsertEndChild(errorElem);
         return;
     }
-    
-    auto order = orderRepo.getOrder(orderId);
-    if(!order){
-        std::cerr << "ERROR: Order not found: " << orderId << std::endl;
+    auto ord = orderRepo.getOrder(orderId);
+    if(!ord){
         XMLElement *errorElem = results->GetDocument()->NewElement("error");
         errorElem->SetAttribute("id", idStr);
         errorElem->SetText("Order not found");
         results->InsertEndChild(errorElem);
         return;
     }
-    
-    if(order->getAccountId() != accountId){
-        std::cerr << "ERROR: Order " << orderId << " does not belong to account " << accountId << std::endl;
+    if(ord->getAccountId() != accountId){
         XMLElement *errorElem = results->GetDocument()->NewElement("error");
         errorElem->SetAttribute("id", idStr);
         errorElem->SetText("Order does not belong to this account");
         results->InsertEndChild(errorElem);
         return;
     }
-    
     XMLElement *statusElem = results->GetDocument()->NewElement("status");
     statusElem->SetAttribute("id", idStr);
-    
-    if(order->getStatus() == OrderStatus::OPEN && order->getOpenAmount() != 0){
+    if(ord->getStatus() == OrderStatus::OPEN && ord->getOpenAmount() != 0){
         XMLElement *openElem = results->GetDocument()->NewElement("open");
-        openElem->SetAttribute("shares", std::to_string(std::abs(order->getOpenAmount())).c_str());
+        openElem->SetAttribute("shares", std::to_string(std::abs(ord->getOpenAmount())).c_str());
         statusElem->InsertEndChild(openElem);
     }
-    
     auto executions = orderRepo.getOrderExecutions(orderId);
     for(const auto &exec : executions){
         XMLElement *executedElem = results->GetDocument()->NewElement("executed");
@@ -540,86 +573,69 @@ void TradingEngine::processQuery(const XMLElement *queryElem, XMLElement *result
         executedElem->SetAttribute("time", exec.executedAt.c_str());
         statusElem->InsertEndChild(executedElem);
     }
-    
-    if(order->getStatus() == OrderStatus::CANCELED && order->getOpenAmount() != 0){
+    if(ord->getStatus() == OrderStatus::CANCELED && ord->getOpenAmount() != 0){
         XMLElement *canceledElem = results->GetDocument()->NewElement("canceled");
-        canceledElem->SetAttribute("shares", std::to_string(std::abs(order->getOpenAmount())).c_str());
-        canceledElem->SetAttribute("time", std::to_string(order->getCancelTime()).c_str());
+        canceledElem->SetAttribute("shares", std::to_string(std::abs(ord->getOpenAmount())).c_str());
+        canceledElem->SetAttribute("time", std::to_string(ord->getCancelTime()).c_str());
         statusElem->InsertEndChild(canceledElem);
     }
-    
     results->InsertEndChild(statusElem);
     std::cout << "==== QUERY PROCESSING COMPLETE ====" << std::endl;
 }
 
 void TradingEngine::processCancel(const XMLElement *cancelElem, XMLElement *results, const std::string &accountId) {
     std::cout << "==== PROCESSING CANCEL ====" << std::endl;
-    
     const char *idStr = cancelElem->Attribute("id");
     if(!idStr){
-        std::cerr << "ERROR: Missing id attribute in cancel" << std::endl;
         XMLElement *errorElem = results->GetDocument()->NewElement("error");
         errorElem->SetText("Missing order id in cancel request");
         results->InsertEndChild(errorElem);
         return;
     }
-    
     int orderId = 0;
     try {
         orderId = std::stoi(idStr);
         std::cout << "Canceling order ID: " << orderId << std::endl;
     } catch(const std::exception &e){
-        std::cerr << "ERROR: Invalid order ID format: " << e.what() << std::endl;
         XMLElement *errorElem = results->GetDocument()->NewElement("error");
         errorElem->SetAttribute("id", idStr);
         errorElem->SetText("Invalid order ID format");
         results->InsertEndChild(errorElem);
         return;
     }
-    
     auto order = orderRepo.getOrder(orderId);
     if(!order){
-        std::cerr << "ERROR: Order not found: " << orderId << std::endl;
         XMLElement *errorElem = results->GetDocument()->NewElement("error");
         errorElem->SetAttribute("id", idStr);
         errorElem->SetText("Order not found");
         results->InsertEndChild(errorElem);
         return;
     }
-    
     if(order->getAccountId() != accountId){
-        std::cerr << "ERROR: Order " << orderId << " does not belong to account " << accountId << std::endl;
         XMLElement *errorElem = results->GetDocument()->NewElement("error");
         errorElem->SetAttribute("id", idStr);
         errorElem->SetText("Order does not belong to this account");
         results->InsertEndChild(errorElem);
         return;
     }
-    
     bool success = cancelOrder(orderId);
-    
     if(success){
-        std::cout << "Successfully canceled order: " << orderId << std::endl;
         auto canceledOrder = orderRepo.getOrder(orderId);
-        
         XMLElement *canceledElem = results->GetDocument()->NewElement("canceled");
         canceledElem->SetAttribute("id", idStr);
         results->InsertEndChild(canceledElem);
     }
     else{
-        std::cerr << "ERROR: Failed to cancel order: " << orderId << std::endl;
         XMLElement *errorElem = results->GetDocument()->NewElement("error");
         errorElem->SetAttribute("id", idStr);
         errorElem->SetText("Failed to cancel order");
         results->InsertEndChild(errorElem);
     }
-    
     std::cout << "==== CANCEL PROCESSING COMPLETE ====" << std::endl;
 }
 
 void TradingEngine::processTransaction(const XMLElement *root, XMLElement *results) {
     std::cout << "==== PROCESSING TRANSACTION REQUEST ====" << std::endl;
-    
     const char *accountIdStr = root->Attribute("id");
     if(!accountIdStr){
         std::cerr << "ERROR: Missing account ID in transaction request" << std::endl;
@@ -628,16 +644,12 @@ void TradingEngine::processTransaction(const XMLElement *root, XMLElement *resul
         results->InsertEndChild(errorElem);
         return;
     }
-    
     std::string accountId = accountIdStr;
     std::cout << "Transaction for account: " << accountId << std::endl;
-    
     std::cout << "Checking if account exists in database..." << std::endl;
     bool accountExists = false;
-    
     try {
         accountExists = accountRepo.accountExists(accountId);
-        
         if(accountExists){
             std::cout << "Account exists in database" << std::endl;
         }
@@ -648,7 +660,6 @@ void TradingEngine::processTransaction(const XMLElement *root, XMLElement *resul
         std::cerr << "ERROR: Database exception: " << e.what() << std::endl;
         accountExists = false;
     }
-    
     if(!accountExists){
         std::cerr << "Account does not exist, returning error" << std::endl;
         XMLElement *errorElem = results->GetDocument()->NewElement("error");
@@ -657,14 +668,9 @@ void TradingEngine::processTransaction(const XMLElement *root, XMLElement *resul
         results->InsertEndChild(errorElem);
         return;
     }
-    
-    for(const XMLElement *childElem = root->FirstChildElement(); 
-        childElem; 
-        childElem = childElem->NextSiblingElement()){
-        
+    for(const XMLElement *childElem = root->FirstChildElement(); childElem; childElem = childElem->NextSiblingElement()){
         std::string elemType = childElem->Name();
         std::cout << "Processing child element: " << elemType << std::endl;
-        
         if(elemType == "order"){
             processOrder(childElem, results, accountId);
         }
@@ -675,7 +681,6 @@ void TradingEngine::processTransaction(const XMLElement *root, XMLElement *resul
             processCancel(childElem, results, accountId);
         }
     }
-    
     std::cout << "==== TRANSACTION REQUEST PROCESSING COMPLETE ====" << std::endl;
 }
 
@@ -717,14 +722,14 @@ void TradingEngine::processOrder(const XMLElement *orderElem, XMLElement *result
         return;
     }
     
-    std::cout << "Debug: Checking account balance and position before order" << std::endl;
+    
     try {
         double balance = accountRepo.getBalance(accountId);
         double position = accountRepo.getPosition(accountId, symStr);
         std::cout << "Account " << accountId << " has balance: " << balance 
-                  << " and position in " << symStr << ": " << position << std::endl;
+                   << " and position in " << symStr << ": " << position << std::endl;
     } catch(const std::exception &e){
-        std::cout << "DEBUG: Error checking balance/position: " << e.what() << std::endl;
+        std::cout << "Error checking balance/position: " << e.what() << std::endl;
     }
     
     try {

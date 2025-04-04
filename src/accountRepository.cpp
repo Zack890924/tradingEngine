@@ -1,6 +1,8 @@
 #include "accountRepository.hpp"
 #include "dbConnection.hpp"
 #include <pqxx/pqxx>
+#include <map>
+#include <iostream>
 
 bool AccountRepository::createAccount(const std::string& accountId, double balance) {
     try {
@@ -176,4 +178,38 @@ double AccountRepository::getPosition(const std::string& accountId, const std::s
         // Log the error
         return -1;
     }
+}
+
+
+bool AccountRepository::executeSQL(const std::string& sql) {
+    try {
+        pqxx::work txn(DBConnection::getConnection());
+        txn.exec(sql);
+        txn.commit();
+        return true;
+    } catch (const std::exception& e) {
+        // log
+        return false;
+    }
+}
+
+std::map<std::string, double> AccountRepository::getAllPositions(const std::string& accountId) {
+    std::map<std::string, double> result;
+    try {
+        pqxx::work txn(DBConnection::getConnection());
+        pqxx::result r = txn.exec_params(
+            "SELECT symbol, amount FROM positions WHERE account_id = $1",
+            accountId
+        );
+        
+        for (const auto& row : r) {
+            std::string symbol = row[0].as<std::string>();
+            double amount = row[1].as<double>();
+            result[symbol] = amount;
+        }
+    }
+    catch (const std::exception& e) {
+        std::cerr << "[getAllPositions] Exception: " << e.what() << std::endl;
+    }
+    return result;
 }

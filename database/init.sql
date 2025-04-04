@@ -37,6 +37,7 @@ CREATE TABLE orders (
     FOREIGN KEY (symbol) REFERENCES symbols(symbol)
 );
 
+--executions
 CREATE TABLE executions (
     execution_id SERIAL PRIMARY KEY,
     buy_order_id INTEGER NOT NULL,
@@ -46,9 +47,13 @@ CREATE TABLE executions (
     price NUMERIC(19, 4) NOT NULL,
     executed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (buy_order_id) REFERENCES orders(order_id),
-    FOREIGN KEY (sell_order_id) REFERENCES orders(order_id),
-    FOREIGN KEY (symbol) REFERENCES symbols(symbol)
+    FOREIGN KEY (sell_order_id) REFERENCES orders(order_id)
 );
+
+
+ALTER TABLE symbols 
+    ADD CONSTRAINT symbols_pkey PRIMARY KEY(symbol);
+
 
 -- Create indexes for better performance
 CREATE INDEX idx_orders_symbol_status_amount ON orders(symbol, status, amount);

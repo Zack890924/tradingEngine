@@ -15,11 +15,11 @@ public:
     std::shared_ptr<Order> findOrder(int orderId);
     std::shared_ptr<Order> findAndRemoveOrder(int orderId);
     void updateOrRemoveOrder(std::shared_ptr<Order> order);
+    std::vector<std::shared_ptr<Order>> buyOrders;
+    std::vector<std::shared_ptr<Order>> sellOrders;
     
     // Add other methods as needed
 private:
-    std::vector<std::shared_ptr<Order>> buyOrders;
-    std::vector<std::shared_ptr<Order>> sellOrders;
     std::map<int, std::shared_ptr<Order>> ordersById;
     
     // Internal helpers
