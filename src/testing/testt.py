@@ -10,16 +10,16 @@ import uuid
 HOST = 'localhost'
 SERVER_PORT = 12345
 
-# 資料庫連線設定（根據你的 docker 與 main 設定）
+
 DB_HOST = 'localhost'
-DB_PORT = 5433  # Docker 映射到主機的埠
+DB_PORT = 5433  
 DB_USER = 'exchange'
 DB_PASSWORD = 'exchange_password'
 DB_NAME = 'exchange_db'
 
-# 全域字典，用來存放各個測試所使用的帳戶與訂單 id
+
 global_ids = {}
-# 用來存放從下單回應捕捉到的訂單 id
+
 global_order_ids = {}
 
 def unique_account(prefix):
@@ -30,7 +30,7 @@ def send_xml_request(xml_str):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.connect((HOST, SERVER_PORT))
             xml_bytes = xml_str.encode('utf-8')
-            # 傳送前綴 4 bytes 表示後續 XML 的 byte 長度
+            
             s.sendall(struct.pack('!I', len(xml_bytes)) + xml_bytes)
 
             raw_len = s.recv(4)
@@ -56,19 +56,18 @@ def check_xml_format(xml_str):
         return False, str(e)
 
 def run_server_tests():
-    # 為了避免狀態累積，每個測試使用全新帳戶 id
-    # 產生帳戶 id：
-    acct_buy = unique_account("acct_buy")       # 用於買單測試（Test 1、5、7、8）
-    acct_sell = unique_account("acct_sell")     # 用於賣單測試（Test 2、6）
-    acct_dup = unique_account("acct_dup")       # 用於重複建立測試（Test 3）
-    acct_symbol_missing = unique_account("acct_missing")  # 用於 Test 4
-    acct_insufficient_funds = unique_account("acct_fund")   # 用於 Test 9 (不存在)
-    acct_insufficient_shares = unique_account("acct_shares")# 用於 Test 10 (不存在)
-    acct_invalid = unique_account("acct_invalid")           # 用於 Test 13 (不存在)
-    acct_match_buy = unique_account("acct_match_buy")       # 用於撮合測試買方 (Test 14)
-    acct_match_sell = unique_account("acct_match_sell")     # 用於撮合測試賣方 (Test 14)
+   
+    acct_buy = unique_account("acct_buy")      
+    acct_sell = unique_account("acct_sell")    
+    acct_dup = unique_account("acct_dup")      
+    acct_symbol_missing = unique_account("acct_missing")  
+    acct_insufficient_funds = unique_account("acct_fund")   
+    acct_insufficient_shares = unique_account("acct_shares")
+    acct_invalid = unique_account("acct_invalid")          
+    acct_match_buy = unique_account("acct_match_buy")       
+    acct_match_sell = unique_account("acct_match_sell")   
 
-    # 將帳戶 id存入全域字典，方便後續測試參考
+
     global_ids["buy"] = acct_buy
     global_ids["sell"] = acct_sell
     global_ids["dup"] = acct_dup
@@ -201,19 +200,15 @@ def run_server_tests():
         ("Test 14c: Matching orders with partial fill", 
          f"""<?xml version="1.0"?>
 <transactions id="{acct_match_buy}">
-  <!-- 買單：買 100 股，限價 125 -->
   <order sym="AAPL" amount="100" limit="125"/>
 </transactions>
 <transactions id="{acct_match_sell}">
-  <!-- 賣單：賣 50 股，限價 120 -->
   <order sym="AAPL" amount="-50" limit="120"/>
 </transactions>
 <transactions id="{acct_match_sell}">
-  <!-- 賣單：賣 50 股，限價 123 -->
   <order sym="AAPL" amount="-50" limit="123"/>
 </transactions>
 <transactions id="{acct_match_buy}">
-  <!-- 查詢買單，動態假設 id 為 2，實際依照伺服器回應而定 -->
   <query id="2"/>
 </transactions>"""),
     ]

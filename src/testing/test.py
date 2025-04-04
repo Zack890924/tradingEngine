@@ -198,9 +198,9 @@ if __name__ == "__main__":
             large_buy_order_id = opened_elem.attrib["id"]
             print(f"\nExtracted Large Buy Order ID: {large_buy_order_id}")
         else:
-            print("\n❗ Large Buy order not opened; response:", ET.tostring(root, encoding="unicode"))
+            print("\nLarge Buy order not opened; response:", ET.tostring(root, encoding="unicode"))
     except Exception as e:
-        print("❗ Error extracting Large Buy Order ID:", e)
+        print("Error extracting Large Buy Order ID:", e)
 
  
     print("\nPlacing first sell order for 40 shares:")
@@ -229,7 +229,7 @@ if __name__ == "__main__":
         print("Response:")
         print(resp)
     else:
-        print("❗ Could not extract Large Buy Order ID for query.")
+        print("Could not extract Large Buy Order ID for query.")
     time.sleep(0.5)
 
 
@@ -243,7 +243,7 @@ if __name__ == "__main__":
         print("Response:")
         print(resp)
     else:
-        print("❗ No large buy order to cancel.")
+        print("No large buy order to cancel.")
     time.sleep(0.5)
 
     # Step 8: 

@@ -62,7 +62,7 @@ def get_db_connection():
         print(f"Could not connect using localhost: {e}")
     
     # No connection method worked
-    print("❌ Failed to connect to the database using any method")
+    print("Failed to connect to the database using any method")
     return None
 
 def clear_test_data():
@@ -98,10 +98,10 @@ def check_account_in_db(account_id):
             cur.execute("SELECT * FROM accounts WHERE account_id = %s", (account_id,))
             account = cur.fetchone()
             if account:
-                print(f"✅ Found account in database: {account}")
+                print(f"Found account in database: {account}")
                 return True
             else:
-                print(f"❌ Account not found in database: {account_id}")
+                print(f"Account not found in database: {account_id}")
                 return False
     except Exception as e:
         print(f"Error checking account: {e}")
@@ -165,7 +165,7 @@ def test_account_creation():
     response = send_request(xml)
     
     if not response:
-        print("❌ No response received")
+        print("No response received")
         return False
         
     print("\nReceived response:")
@@ -176,9 +176,9 @@ def test_account_creation():
         root = ET.fromstring(response)
         created = root.find("./created")
         if created is not None and created.get("id") == account_id:
-            print(f"✅ Response contains created element for {account_id}")
+            print(f"Response contains created element for {account_id}")
         else:
-            print("❌ Response missing created element")
+            print("Response missing created element")
     except Exception as e:
         print(f"Error parsing response: {e}")
     
@@ -190,6 +190,6 @@ def test_account_creation():
 if __name__ == "__main__":
     result = test_account_creation()
     if result:
-        print("\n✅ TEST PASSED: Account was created and found in database")
+        print("\nTEST PASSED: Account was created and found in database")
     else:
-        print("\n❌ TEST FAILED: Account was not created or not found in database")
+        print("\nTEST FAILED: Account was not created or not found in database")

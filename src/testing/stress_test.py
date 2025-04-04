@@ -12,7 +12,7 @@ def send_xml_request(xml_str):
     start = time.time()
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(5)  # 設定 5 秒超時
+            s.settimeout(5)  
             s.connect((host, port))
             xml_bytes = xml_str.encode('utf-8')
             s.sendall(struct.pack("!I", len(xml_bytes)) + xml_bytes)
