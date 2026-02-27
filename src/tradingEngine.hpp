@@ -35,6 +35,10 @@ private:
     mutable std::shared_mutex orderBooksMtx;
     mutable std::shared_mutex globalMtx;
 
+    // Per-symbol locks for matching to prevent concurrent matching on same symbol
+    std::unordered_map<std::string, std::unique_ptr<std::mutex>> symbolMatchingLocks;
+    mutable std::mutex symbolLocksMapMtx;  // Protects the symbolMatchingLocks map
+
     std::atomic<long long> orderCounter;
     
     // Helper methods

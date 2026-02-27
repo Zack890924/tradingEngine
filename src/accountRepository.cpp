@@ -201,7 +201,7 @@ std::map<std::string, double> AccountRepository::getAllPositions(const std::stri
             "SELECT symbol, amount FROM positions WHERE account_id = $1",
             accountId
         );
-        
+
         for (const auto& row : r) {
             std::string symbol = row[0].as<std::string>();
             double amount = row[1].as<double>();
@@ -212,4 +212,84 @@ std::map<std::string, double> AccountRepository::getAllPositions(const std::stri
         std::cerr << "[getAllPositions] Exception: " << e.what() << std::endl;
     }
     return result;
+}
+
+// Transaction-aware versions
+bool AccountRepository::accountExists(pqxx::work& txn, const std::string& accountId) {
+    try {
+        pqxx::result r = txn.exec_params(
+            "SELECT 1 FROM accounts WHERE account_id = $1",
+            accountId
+        );
+        return !r.empty();
+    }
+    catch (const std::exception& e) {
+        return false;
+    }
+}
+
+double AccountRepository::getBalance(pqxx::work& txn, const std::string& accountId) {
+    try {
+        pqxx::result r = txn.exec_params(
+            "SELECT balance FROM accounts WHERE account_id = $1 FOR UPDATE",
+            accountId
+        );
+
+        if (r.empty()) {
+            return -1;
+        }
+
+        return r[0][0].as<double>();
+    }
+    catch (const std::exception& e) {
+        return -1;
+    }
+}
+
+bool AccountRepository::updateBalance(pqxx::work& txn, const std::string& accountId, double newBalance) {
+    try {
+        pqxx::result r = txn.exec_params(
+            "UPDATE accounts SET balance = $1 WHERE account_id = $2",
+            newBalance,
+            accountId
+        );
+        return true;
+    }
+    catch (const std::exception& e) {
+        return false;
+    }
+}
+
+double AccountRepository::getPosition(pqxx::work& txn, const std::string& accountId, const std::string& symbol) {
+    try {
+        pqxx::result r = txn.exec_params(
+            "SELECT amount FROM positions WHERE account_id = $1 AND symbol = $2 FOR UPDATE",
+            accountId,
+            symbol
+        );
+
+        if (r.empty()) {
+            return 0;
+        }
+
+        return r[0][0].as<double>();
+    }
+    catch (const std::exception& e) {
+        return -1;
+    }
+}
+
+bool AccountRepository::updatePosition(pqxx::work& txn, const std::string& accountId, const std::string& symbol, double amount) {
+    try {
+        pqxx::result r = txn.exec_params(
+            "UPDATE positions SET amount = $1 WHERE account_id = $2 AND symbol = $3",
+            amount,
+            accountId,
+            symbol
+        );
+        return true;
+    }
+    catch (const std::exception& e) {
+        return false;
+    }
 }

@@ -1,4 +1,6 @@
 #include "tradingEngine.hpp"
+#include "dbConnection.hpp"
+#include <pqxx/pqxx>
 #include <iostream>
 #include <sstream>
 #include <memory>
@@ -136,8 +138,44 @@ OrderBook *TradingEngine::getOrderBookIfExist(const std::string &symbol){
 void TradingEngine::matchOrders(const std::string &symbol){
     std::cout << "[DEBUG] Enter matchOrders for symbol=" << symbol << std::endl;
 
-    auto buyOrders = orderRepo.getOpenBuyOrders(symbol);
-    auto sellOrders = orderRepo.getOpenSellOrders(symbol);
+    // Acquire per-symbol lock to prevent concurrent matching on the same symbol
+    std::mutex* symbolLock = nullptr;
+    {
+        std::lock_guard<std::mutex> mapLock(symbolLocksMapMtx);
+        auto it = symbolMatchingLocks.find(symbol);
+        if (it == symbolMatchingLocks.end()) {
+            symbolMatchingLocks[symbol] = std::make_unique<std::mutex>();
+        }
+        symbolLock = symbolMatchingLocks[symbol].get();
+    }
+
+    std::lock_guard<std::mutex> lock(*symbolLock);
+    std::cout << "[DEBUG] Acquired lock for symbol=" << symbol << std::endl;
+
+    // Get orders from OrderBook cache instead of DB
+    std::vector<std::shared_ptr<Order>> buyOrders;
+    std::vector<std::shared_ptr<Order>> sellOrders;
+
+    {
+        std::shared_lock<std::shared_mutex> lockOrderBooks(orderBooksMtx);
+        auto it = orderBooks.find(symbol);
+        if (it != orderBooks.end()) {
+            // Copy only OPEN orders with openAmount > 0
+            for (const auto& order : it->second.getBuyOrders()) {
+                if (order->getStatus() == OrderStatus::OPEN && order->getOpenAmount() > 0) {
+                    buyOrders.push_back(order);
+                }
+            }
+            for (const auto& order : it->second.getSellOrders()) {
+                if (order->getStatus() == OrderStatus::OPEN && order->getOpenAmount() > 0) {
+                    sellOrders.push_back(order);
+                }
+            }
+        }
+    }
+
+    std::cout << "[Cache] Loaded " << buyOrders.size() << " buy orders and "
+              << sellOrders.size() << " sell orders from cache for symbol " << symbol << std::endl;
 
  
 
@@ -183,110 +221,205 @@ void TradingEngine::matchOrders(const std::string &symbol){
 
 
 int TradingEngine::placeOrder(const std::string &accountId, const std::string &symbol, double amount, double limitPrice){
-    // std::cout << "==== PLACING ORDER ====" << std::endl;
     std::cout << "Account: " << accountId << ", Symbol: " << symbol << ", Amount: " << amount << ", Limit: " << limitPrice << std::endl;
+
+    int orderId = -1;
     try {
-        if(!accountRepo.accountExists(accountId)) {
-            // std::cerr << "ERROR: Account does not exist: " << accountId << std::endl;
+        // Wrap all asset updates and order creation in a single transaction
+        pqxx::work txn(DBConnection::getConnection());
+
+        // Check if account exists
+        if(!accountRepo.accountExists(txn, accountId)) {
             logError("ERROR: Account does not exist: " + accountId);
             return -1;
         }
+
         if(amount > 0) {
+            // Buy order - deduct cash
             double cost = amount * limitPrice;
-            double balance = accountRepo.getBalance(accountId);
+            double balance = accountRepo.getBalance(txn, accountId);
             std::cout << "Buy order - Cost: " << cost << ", Available balance: " << balance << std::endl;
+
             if(balance < cost) {
-                // std::cerr << "ERROR: Insufficient balance for buy order" << std::endl;
                 logError("ERROR: Insufficient balance for buy order");
                 return -1;
-
             }
-            if(!accountRepo.updateBalance(accountId, balance - cost)) {
-                // std::cerr << "ERROR: Failed to update balance" << std::endl;
+
+            if(!accountRepo.updateBalance(txn, accountId, balance - cost)) {
                 logError("ERROR: Failed to update balance");
                 return -1;
             }
             std::cout << "Successfully deducted " << cost << " from account balance" << std::endl;
         }
         else if(amount < 0) {
-            double shares = accountRepo.getPosition(accountId, symbol);
+            // Sell order - deduct shares
+            double shares = accountRepo.getPosition(txn, accountId, symbol);
             std::cout << "Sell order - Required shares: " << std::abs(amount) << ", Available shares: " << shares << std::endl;
+
             if(shares < std::abs(amount)) {
-                // std::cerr << "ERROR: Insufficient shares for sell order" << std::endl;
                 logError("ERROR: Insufficient shares for sell order");
                 return -1;
             }
-            if(!accountRepo.updatePosition(accountId, symbol, shares - std::abs(amount))) {
-                // std::cerr << "ERROR: Failed to update position" << std::endl;
+
+            if(!accountRepo.updatePosition(txn, accountId, symbol, shares - std::abs(amount))) {
                 logError("ERROR: Failed to update position");
                 return -1;
             }
             std::cout << "Successfully deducted " << std::abs(amount) << " shares from account position" << std::endl;
         }
         else {
-            // std::cerr << "ERROR: Order amount cannot be zero" << std::endl;
             logError("ERROR: Order amount cannot be zero");
             return -1;
         }
-        int orderId = orderRepo.createOrder(accountId, symbol, amount, limitPrice);
-        if(orderId > 0) {
-            std::cout << "Successfully created order with ID: " << orderId << std::endl;
-            matchOrders(symbol);
-        }
-        else {
-            // std::cerr << "ERROR: Failed to create order in database" << std::endl;
+
+        // Create the order within the same transaction
+        orderId = orderRepo.createOrder(txn, accountId, symbol, amount, limitPrice);
+        if(orderId <= 0) {
             logError("ERROR: Failed to create order in database");
+            return -1;
         }
+
+        // Commit the transaction - all changes are atomic
+        txn.commit();
+        std::cout << "Successfully created order with ID: " << orderId << " (transaction committed)" << std::endl;
+
+        // After successful commit, update in-memory caches with unique_lock (write lock)
+        std::shared_ptr<Order> order;
+        {
+            std::unique_lock<std::shared_mutex> lockOrders(ordersMtx);
+            OrderSide side = amount > 0 ? OrderSide::BUY : OrderSide::SELL;
+            order = std::make_shared<Order>(
+                orderId,
+                accountId,
+                symbol,
+                limitPrice,
+                std::abs(amount),
+                time(nullptr),
+                side
+            );
+            order->setOpenAmount(std::abs(amount));
+            order->setStatus(OrderStatus::OPEN);
+            orders[orderId] = order;
+            std::cout << "[Cache] Added order " << orderId << " to orders cache" << std::endl;
+        }
+
+        // Add order to OrderBook cache
+        {
+            std::unique_lock<std::shared_mutex> lockOrderBooks(orderBooksMtx);
+            auto it = orderBooks.find(symbol);
+            if (it == orderBooks.end()) {
+                orderBooks.try_emplace(symbol);
+            }
+            orderBooks[symbol].addOrder(order);
+            std::cout << "[Cache] Added order " << orderId << " to OrderBook for symbol " << symbol << std::endl;
+        }
+
+        // Match orders after successful order placement
+        matchOrders(symbol);
+
         return orderId;
+
     } catch(const std::exception &e) {
-        // std::cerr << "ERROR: Exception in placeOrder: " << e.what() << std::endl;
         logError("ERROR: Exception in placeOrder: " + std::string(e.what()));
         return -1;
     }
 }
 
 void TradingEngine::trade(std::shared_ptr<Order> buyOrder, std::shared_ptr<Order> sellOrder, int qty, double tradePrice){
-    
-
     std::string buyerId = buyOrder->getAccountId();
     std::string sellerId = sellOrder->getAccountId();
-    std::string symbol = buyOrder->getSymbol();  
+    std::string symbol = buyOrder->getSymbol();
 
-    long t = time(nullptr);
-    Record rec(qty, tradePrice, t);
-    buyOrder->addExecution(qty, rec);
-    sellOrder->addExecution(qty, rec);
+    try {
+        // Wrap all execution updates in a single transaction
+        pqxx::work txn(DBConnection::getConnection());
 
-    
-    double cost = qty * tradePrice;
+        // Calculate cost
+        double cost = qty * tradePrice;
 
-    double buyerBalance = accountRepo.getBalance(buyerId);
-    accountRepo.updateBalance(buyerId, buyerBalance - cost);
+        // Update buyer: deduct cash, add shares
+        double buyerBalance = accountRepo.getBalance(txn, buyerId);
+        accountRepo.updateBalance(txn, buyerId, buyerBalance - cost);
 
-    double sellerBalance = accountRepo.getBalance(sellerId);
-    accountRepo.updateBalance(sellerId, sellerBalance + cost);
+        double buyerPos = accountRepo.getPosition(txn, buyerId, symbol);
+        accountRepo.updatePosition(txn, buyerId, symbol, buyerPos + qty);
 
-    double buyerPos = accountRepo.getPosition(buyerId, symbol);
-    accountRepo.updatePosition(buyerId, symbol, buyerPos + qty);
+        // Update seller: add cash (shares already deducted at order placement)
+        double sellerBalance = accountRepo.getBalance(txn, sellerId);
+        accountRepo.updateBalance(txn, sellerId, sellerBalance + cost);
 
-  
-    buyOrder->reduceOpenQty(qty);
-    sellOrder->reduceOpenQty(qty);
+        // Record execution in database
+        orderRepo.recordExecution(txn, buyOrder->getOrderId(), sellOrder->getOrderId(), symbol, qty, tradePrice);
 
-    orderRepo.recordExecution(buyOrder->getOrderId(), sellOrder->getOrderId(), symbol, qty, tradePrice);
+        // Calculate new open amounts WITHOUT modifying in-memory state yet
+        double newBuyOpen = buyOrder->getOpenAmount() - qty;
+        double newSellOpen = sellOrder->getOpenAmount() - qty;
 
-    double newBuyOpen = buyOrder->getOpenAmount();
-    double newSellOpen = sellOrder->getOpenAmount();
+        // Update order statuses in database
+        orderRepo.updateOrderStatus(txn, buyOrder->getOrderId(),
+                newBuyOpen == 0 ? OrderStatus::EXECUTED : OrderStatus::OPEN,
+                newBuyOpen);
+        orderRepo.updateOrderStatus(txn, sellOrder->getOrderId(),
+                newSellOpen == 0 ? OrderStatus::EXECUTED : OrderStatus::OPEN,
+                newSellOpen);
 
-    orderRepo.updateOrderStatus(buyOrder->getOrderId(),
-            newBuyOpen == 0 ? OrderStatus::EXECUTED : OrderStatus::OPEN,
-            newBuyOpen);
-    orderRepo.updateOrderStatus(sellOrder->getOrderId(),
-            newSellOpen == 0 ? OrderStatus::EXECUTED : OrderStatus::OPEN,
-            newSellOpen);
+        // Commit the transaction - all changes are atomic
+        txn.commit();
 
-   
+        // ONLY after successful commit, update in-memory state
+        buyOrder->reduceOpenQty(qty);
+        sellOrder->reduceOpenQty(qty);
+
+        long t = time(nullptr);
+        Record rec(qty, tradePrice, t);
+        buyOrder->addExecution(qty, rec);
+        sellOrder->addExecution(qty, rec);
+
+        // Update in-memory cache with unique_lock (write lock) to reduce contention
+        {
+            std::unique_lock<std::shared_mutex> lock(ordersMtx);
+
+            // Update buy order in cache
+            auto buyIt = orders.find(buyOrder->getOrderId());
+            if (buyIt != orders.end()) {
+                buyIt->second->setOpenAmount(newBuyOpen);
+                buyIt->second->setStatus(newBuyOpen == 0 ? OrderStatus::EXECUTED : OrderStatus::OPEN);
+            }
+
+            // Update sell order in cache
+            auto sellIt = orders.find(sellOrder->getOrderId());
+            if (sellIt != orders.end()) {
+                sellIt->second->setOpenAmount(newSellOpen);
+                sellIt->second->setStatus(newSellOpen == 0 ? OrderStatus::EXECUTED : OrderStatus::OPEN);
+            }
+
+            std::cout << "[Cache] Updated orders in cache after trade" << std::endl;
+        }
+
+        // Update OrderBook cache - remove fully executed orders
+        {
+            std::unique_lock<std::shared_mutex> lockOrderBooks(orderBooksMtx);
+            auto it = orderBooks.find(symbol);
+            if (it != orderBooks.end()) {
+                if (newBuyOpen == 0) {
+                    it->second.findAndRemoveOrder(buyOrder->getOrderId());
+                    std::cout << "[Cache] Removed fully executed buy order " << buyOrder->getOrderId() << " from OrderBook" << std::endl;
+                }
+                if (newSellOpen == 0) {
+                    it->second.findAndRemoveOrder(sellOrder->getOrderId());
+                    std::cout << "[Cache] Removed fully executed sell order " << sellOrder->getOrderId() << " from OrderBook" << std::endl;
+                }
+            }
+        }
+
+        std::cout << "Trade executed atomically: " << qty << " shares of " << symbol
+                  << " at price " << tradePrice << std::endl;
+
+    } catch(const std::exception &e) {
+        logError("ERROR: Exception in trade: " + std::string(e.what()));
+        throw;  // Re-throw to let matchOrders handle the error
     }
+}
 
 
 
@@ -301,32 +434,87 @@ bool TradingEngine::executeTransaction(const Order &buyOrder, const Order &sellO
 }
 
 bool TradingEngine::cancelOrder(int orderId) {
-    auto order = orderRepo.getOrder(orderId);
-    if(!order){
+    try {
+        // Wrap order cancellation and asset refund in a single transaction
+        pqxx::work txn(DBConnection::getConnection());
+
+        auto order = orderRepo.getOrder(txn, orderId);
+        if(!order){
+            return false;
+        }
+
+        bool canceled = orderRepo.cancelOrder(txn, orderId);
+        if(canceled) {
+            if(order->getAmount() > 0) {
+                // Refund cash for buy order
+                double refundAmount = order->getOpenAmount() * order->getLimitPrice();
+                double currentBalance = accountRepo.getBalance(txn, order->getAccountId());
+                accountRepo.updateBalance(txn, order->getAccountId(), currentBalance + refundAmount);
+            }
+            else {
+                // Return shares for sell order
+                double returnShares = std::abs(order->getOpenAmount());
+                double currentShares = accountRepo.getPosition(txn, order->getAccountId(), order->getSymbol());
+                accountRepo.updatePosition(txn, order->getAccountId(), order->getSymbol(), currentShares + returnShares);
+            }
+
+            txn.commit();
+            std::cout << "Order " << orderId << " canceled and assets refunded (transaction committed)" << std::endl;
+
+            // Update in-memory cache with unique_lock (write lock)
+            {
+                std::unique_lock<std::shared_mutex> lock(ordersMtx);
+                auto it = orders.find(orderId);
+                if (it != orders.end()) {
+                    it->second->setStatus(OrderStatus::CANCELED);
+                    std::cout << "[Cache] Updated order " << orderId << " to CANCELED in cache" << std::endl;
+                }
+            }
+
+            // Remove from OrderBook cache
+            {
+                std::unique_lock<std::shared_mutex> lockOrderBooks(orderBooksMtx);
+                auto it = orderBooks.find(order->getSymbol());
+                if (it != orderBooks.end()) {
+                    it->second.findAndRemoveOrder(orderId);
+                    std::cout << "[Cache] Removed canceled order " << orderId << " from OrderBook" << std::endl;
+                }
+            }
+        }
+
+        return canceled;
+
+    } catch(const std::exception &e) {
+        logError("ERROR: Exception in cancelOrder: " + std::string(e.what()));
         return false;
     }
-    bool canceled = orderRepo.cancelOrder(orderId);
-    if(canceled) {
-        if(order->getAmount() > 0) {
-            double refundAmount = order->getOpenAmount() * order->getLimitPrice();
-            double currentBalance = accountRepo.getBalance(order->getAccountId());
-            accountRepo.updateBalance(order->getAccountId(), currentBalance + refundAmount);
-        }
-        else {
-            double returnShares = std::abs(order->getOpenAmount());
-            double currentShares = accountRepo.getPosition(order->getAccountId(), order->getSymbol());
-            accountRepo.updatePosition(order->getAccountId(), order->getSymbol(), currentShares + returnShares);
-        }
-    }
-    return canceled;
 }
 
 bool TradingEngine::queryOrder(int order_id, std::string &XML_info) {
-    auto order = orderRepo.getOrder(order_id);
+    std::shared_ptr<Order> order;
+
+    // First try to read from in-memory cache with shared_lock (read lock)
+    // This allows multiple concurrent queries without blocking each other
+    {
+        std::shared_lock<std::shared_mutex> lock(ordersMtx);
+        auto it = orders.find(order_id);
+        if (it != orders.end()) {
+            order = it->second;
+            std::cout << "[Cache] Order " << order_id << " found in cache with shared_lock (concurrent reads enabled)" << std::endl;
+        }
+    }
+
+    // Fallback to DB if not in cache
+    if (!order) {
+        order = orderRepo.getOrder(order_id);
+        std::cout << "[Cache] Order " << order_id << " not in cache, fetched from DB" << std::endl;
+    }
+
     if(!order){
         XML_info = "<status id=\"" + std::to_string(order_id) + "\"><error>Order not found</error></status>";
         return false;
     }
+
     XML_info = "<status id=\"" + std::to_string(order_id) + "\">";
     if(order->getStatus() == OrderStatus::OPEN && order->getOpenAmount() != 0){
         XML_info += "<open shares=\"" + std::to_string(std::abs(order->getOpenAmount())) + "\"/>";

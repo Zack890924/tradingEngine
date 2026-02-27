@@ -223,3 +223,117 @@ std::vector<OrderExecution> OrderRepository::getOrderExecutions(int orderId) {
     }
     return v;
 }
+
+// Transaction-aware versions
+int OrderRepository::createOrder(pqxx::work& txn, const std::string& accountId, const std::string& symbol,
+                               double amount, double limitPrice) {
+    try {
+        pqxx::result r = txn.exec_params(
+            "INSERT INTO orders (account_id, symbol, amount, limit_price, open_amount, status) "
+            "VALUES ($1, $2, $3, $4, $5, $6) RETURNING order_id",
+            accountId,
+            symbol,
+            amount,
+            limitPrice,
+            std::abs(amount),
+            "OPEN"
+        );
+        int orderId = r[0][0].as<int>();
+        return orderId;
+    }
+    catch (const std::exception& e) {
+        return -1;
+    }
+}
+
+bool OrderRepository::updateOrderStatus(pqxx::work& txn, int orderId, OrderStatus status, double openAmount) {
+    try {
+        std::string s;
+        switch(status) {
+            case OrderStatus::OPEN:
+                s = "OPEN";
+                break;
+            case OrderStatus::EXECUTED:
+                s = "EXECUTED";
+                break;
+            case OrderStatus::CANCELED:
+                s = "CANCELED";
+                break;
+        }
+        pqxx::result r = txn.exec_params(
+            "UPDATE orders SET status = $1, open_amount = $2 WHERE order_id = $3",
+            s,
+            openAmount,
+            orderId
+        );
+        return r.affected_rows() > 0;
+    }
+    catch (const std::exception& e) {
+        return false;
+    }
+}
+
+bool OrderRepository::recordExecution(pqxx::work& txn, int buyOrderId, int sellOrderId,
+                                     const std::string& symbol, double amount, double price) {
+    try {
+        txn.exec_params(
+            "INSERT INTO executions (buy_order_id, sell_order_id, symbol, amount, price, executed_at) VALUES ($1, $2, $3, $4, $5, NOW())",
+            buyOrderId, sellOrderId, symbol, amount, price
+        );
+        std::cout << "Execution recorded: buy=" << buyOrderId << ", sell=" << sellOrderId << ", amount=" << amount << ", price=" << price << std::endl;
+        return true;
+    }
+    catch (const std::exception& e) {
+        std::cerr << "Error inserting execution: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+std::shared_ptr<Order> OrderRepository::getOrder(pqxx::work& txn, int orderId) {
+    std::shared_ptr<Order> o;
+    try {
+        pqxx::result r = txn.exec_params(
+            "SELECT order_id, account_id, symbol, amount, limit_price, open_amount, status, created_at FROM orders WHERE order_id = $1",
+            orderId
+        );
+        if (!r.empty()) {
+            const auto& row = r[0];
+            int id = row["order_id"].as<int>();
+            std::string acc = row["account_id"].as<std::string>();
+            std::string sym = row["symbol"].as<std::string>();
+            double amt = row["amount"].as<double>();
+            double lp = row["limit_price"].as<double>();
+            double openAmt = row["open_amount"].as<double>();
+            std::string statusStr = row["status"].as<std::string>();
+            long createdTs = 0;
+
+            OrderSide side = amt > 0 ? OrderSide::BUY : OrderSide::SELL;
+            int quantity = std::abs((int)amt);
+
+            o = std::make_shared<Order>(id, acc, sym, lp, quantity, createdTs, side);
+
+            o->setOpenAmount(openAmt);
+
+            if (statusStr == "OPEN") o->setStatus(OrderStatus::OPEN);
+            else if (statusStr == "EXECUTED") o->setStatus(OrderStatus::EXECUTED);
+            else if (statusStr == "CANCELED") o->setStatus(OrderStatus::CANCELED);
+        }
+
+    }
+    catch (const std::exception& e) {
+    }
+    return o;
+}
+
+bool OrderRepository::cancelOrder(pqxx::work& txn, int orderId) {
+    try {
+        pqxx::result r = txn.exec_params(
+            "UPDATE orders SET status = 'CANCELED' WHERE order_id = $1 AND status = 'OPEN'",
+            orderId
+        );
+        return r.affected_rows() > 0;
+    }
+    catch (const std::exception& e) {
+        return false;
+    }
+}
